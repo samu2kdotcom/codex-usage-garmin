@@ -1,0 +1,8 @@
+<properties>
+    <!-- Solo para builds personales (scripts/bake-personal.sh las rellena y
+         las restaura vacías). NUNCA versionar un token real aquí.
+         access_exp = epoch de caducidad del access token (cadena). -->
+    <property id="refresh_token" type="string"></property>
+    <property id="access_token" type="string"></property>
+    <property id="access_exp" type="string"></property>
+</properties>

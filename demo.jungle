@@ -1,0 +1,3 @@
+# Se encadena tras monkey.jungle (DEMO=1 scripts/build.sh): datos de ejemplo,
+# sin red ni login. Solo para capturas del simulador.
+base.excludeAnnotations = prod
