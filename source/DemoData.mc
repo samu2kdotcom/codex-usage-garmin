@@ -19,9 +19,9 @@ module DemoData {
                 { "n" => "Ventana 2 h", "p" => 12, "r" => now + 40 * 60, "sec" => 7200 }
             ],
             "a" => [
-                { "n" => "GPT-Codex-Spark", "p" => 18, "r" => now + 3 * 86400 + 4 * 3600, "sec" => 604800 }
+                { "n" => "GPT-Codex-Spark", "p" => 18, "r" => now + 5 * 86400 + 3600, "sec" => 604800 }
             ],
-            "cr" => { "p" => 4, "r" => now + 3 * 86400 + 4 * 3600 },
+            "cr" => { "p" => 4, "r" => now + 2 * 86400 + 7 * 3600 },
             "g" => [
                 { "id" => "RateLimitResetCredit_demo1", "l" => "Full reset (Weekly + 5 hr)",
                   "t" => "codex_rate_limits", "e" => now + 25 * 86400, "st" => "available" },
