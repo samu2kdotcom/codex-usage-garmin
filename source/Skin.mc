@@ -103,6 +103,32 @@ class Skin {
         text(dc, cx, base, f, fit(dc, txt, f, avail), pal.text, Graphics.TEXT_JUSTIFY_CENTER);
     }
 
+    //! Isotipo (blossom) centrado: `size` de lado y `top` el borde superior de
+    //! la tinta. Es el ancla de marca de la pantalla de uso.
+    function mark(dc as Graphics.Dc, size as Lang.Number, top as Lang.Number) as Void {
+        Logo.draw(dc, cx, top + size / 2, size, pal.brand);
+    }
+
+    //! Ancho útil del círculo para un renglón con línea base `base` (la cuerda
+    //! se mide sobre la tinta del texto, no sobre la celda de la fuente).
+    function chord(dc as Graphics.Dc, font as Graphics.FontType, base as Lang.Number) as Lang.Number {
+        var a = Graphics.getFontAscent(font);
+        return 2 * half(base - a, a + sc(4));
+    }
+
+    //! Fila clave/valor con la MISMA línea base: la etiqueta en cuerpo pequeño
+    //! y el valor en cuerpo normal, alineado a la derecha. Así dos tamaños de
+    //! letra no bailan en la misma fila.
+    function kvRow(dc as Graphics.Dc, x0 as Lang.Number, x1 as Lang.Number,
+                   base as Lang.Number, label as Lang.String, value as Lang.String,
+                   lcolor as Lang.Number, vcolor as Lang.Number) as Void {
+        var vw = dc.getTextWidthInPixels(value, fBody);
+        dc.setColor(lcolor, Graphics.COLOR_TRANSPARENT);
+        dc.drawText(x0, base - Graphics.getFontAscent(fSmall), fSmall,
+                    fit(dc, label, fSmall, (x1 - x0) - vw - sc(8)), Graphics.TEXT_JUSTIFY_LEFT);
+        text(dc, x1, base, fBody, value, vcolor, Graphics.TEXT_JUSTIFY_RIGHT);
+    }
+
     //! Elige la primera fuente de la lista que quepa (o recorta con la última).
     function pick(dc as Graphics.Dc, txt as Lang.String, maxW as Lang.Number) as Graphics.FontType {
         if (dc.getTextWidthInPixels(txt, fBody) <= maxW) {
@@ -197,12 +223,13 @@ class Skin {
         return yTop + lines.size() * lineH;
     }
 
-    //! Indicador de pantalla: puntos discretos abajo. Pegados al borde: la
-    //! última fila de la pantalla de uso (Créditos) acaba justo encima.
+    //! Indicador de pantalla: puntos discretos en el hueco inferior del anillo.
+    //! Con el centro del punto a 15 px del borde, la última fila de contenido
+    //! (que acaba ~20 px más arriba) no se toca con ellos.
     function dots(dc as Graphics.Dc, idx as Lang.Number, n as Lang.Number) as Void {
-        var d = sc1(4);
-        var gap = sc(9);
-        var y = cy * 2 - sc(17);
+        var d = sc1(3);
+        var gap = sc(8);
+        var y = cy * 2 - sc(15);
         var x0 = cx - ((n - 1) * gap) / 2;
         for (var i = 0; i < n; i++) {
             dc.setColor((i == idx) ? pal.brand : pal.faint, Graphics.COLOR_TRANSPARENT);
