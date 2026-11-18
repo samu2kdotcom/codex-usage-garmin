@@ -3,11 +3,11 @@
 **Codex Usage**: widget Garmin Connect IQ (Monkey C) que muestra el uso de tu
 cuenta **ChatGPT** (Codex, chat, …) con sus restablecimientos, también en el
 tier gratuito. Responde en español. Contrato de datos, API, OAuth y pantallas:
-[`SPEC.md`](SPEC.md). Estado: **scaffold** — auth y datos son aún el
-placeholder de Claude marcado "PLACEHOLDER — CONTRATO SIN SUSTITUIR"; ver
-SPEC.md antes de tocar red/login. Boilerplate de origen: la app Claude Usage
-(`../claude-usage` en el monorepo `garminapps`, que a su vez proviene de
-`../nan-usage`).
+[`SPEC.md`](SPEC.md) (cerrado 2026-11-18; queda validación con cuenta real,
+§ "Pendiente de verificar"). Login v1: device code por portátil
+(`scripts/codex-login.py`) + `scripts/bake-personal.sh`. Boilerplate de
+origen: la app Claude Usage (`../claude-usage` en el monorepo `garminapps`,
+que a su vez proviene de `../nan-usage`).
 
 ## Estructura
 
@@ -41,8 +41,9 @@ scripts/release.sh <tag>               # compila los 9 productos y publica la re
   (`devkey.der` aquí es un symlink a la clave del monorepo; no se versiona).
 - **Nunca** usar ni refrescar los tokens de `~/.codex/auth.json` (CLI de
   Codex): rotaría el refresh token y rompería esa sesión.
-- **Mientras el contrato sea placeholder** (SPEC.md, "Estado"): no hacer login
-  real (autenticaría contra Claude), no hornear tokens ni publicar builds.
+- **Nunca** publicar builds ni hornear tokens ajenos hasta validar el
+  contrato con una cuenta real (SPEC.md, "Pendiente de verificar"): login
+  real SOLO con la sesión propia de la app (`scripts/codex-login.py`).
 - **Nunca** escribir tokens en `properties.xml` versionado ni imprimirlos;
   `scripts/bake-personal.sh` los hornea y restaura el fichero.
 - `*.prg`, `*.iq`, `bin/`, `fonts-src/local/` jamás en git. Antes de commit:
