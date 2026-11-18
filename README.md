@@ -7,14 +7,35 @@ en el tier gratuito. Sin abrir el móvil.
 > Proyecto personal y **no oficial**: no está afiliado a OpenAI. El logo y la
 > marca ChatGPT/Codex son de OpenAI.
 
-**Estado: en desarrollo (scaffold).** Estructura, pantallas y ciclo de
-red/batería portados de
+**Estado: en desarrollo.** Estructura, pantallas y ciclo de red/batería
+portados de
 [claude-usage-garmin](https://github.com/samu2kdotcom/claude-usage-garmin)
-(boilerplate de origen). El login con la cuenta ChatGPT y la fuente de datos
-están en curso: el código de red lleva aún el contrato de Claude como
-placeholder marcado `PLACEHOLDER — CONTRATO SIN SUSTITUIR` (ver
-[SPEC.md](SPEC.md)). El modo `DEMO=1` ya funciona con datos de ejemplo, y el
-branding (logo, paleta, tipografía) está pendiente de sustituir.
+(boilerplate de origen). El contrato de la API de ChatGPT está cerrado e
+implementado ([SPEC.md](SPEC.md)): login por device code en el portátil y
+lectura de `chatgpt.com/backend-api/wham/usage` (+ reset credits), con
+soporte del tier gratuito (solo ventana semanal). Queda validar con cuenta
+real (SPEC.md, "Pendiente de verificar") y el branding (logo, paleta,
+tipografía) está en curso. El modo `DEMO=1` funciona con datos de ejemplo del
+contrato nuevo.
+
+## Probarlo con tu cuenta
+
+1. `python3 scripts/codex-login.py` — device code: abre
+   `https://auth.openai.com/codex/device`, teclea el código que imprime;
+   guarda una sesión **independiente** en `~/.secrets/codex_watch.json`
+   (no toca la de la CLI de Codex, nunca imprime tokens).
+2. `scripts/check-usage.sh [--raw]` — lee los dos endpoints con tu sesión
+   (`--raw` vuelca el JSON: contiene email/account_id, no lo pegues en
+   sitios públicos).
+3. `scripts/bake-personal.sh [deviceId]` → `bin/CodexUsage.personal.prg`
+   (lleva la sesión en claro: no compartir) → `scripts/sideload.sh
+   bin/CodexUsage.personal.prg` al reloj.
+
+**Trampa del refresh de un solo uso**: nunca ejecutes
+`codex-login.py --refresh` después de hornear al reloj — rota el refresh y el
+reloj se queda con el muerto (`refresh_token_reused`). Para re-autenticar:
+`codex-login.py` (login nuevo) → `bake-personal.sh` → `sideload.sh`, y
+reabre el widget una vez para que re-siembre la sesión.
 
 ## Compilar
 

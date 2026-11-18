@@ -44,6 +44,11 @@ scripts/release.sh <tag>               # compila los 9 productos y publica la re
 - **Nunca** publicar builds ni hornear tokens ajenos hasta validar el
   contrato con una cuenta real (SPEC.md, "Pendiente de verificar"): login
   real SOLO con la sesión propia de la app (`scripts/codex-login.py`).
+- **Nunca** ejecutar `scripts/codex-login.py --refresh` si ya se horneó al
+  reloj (mismo refresh, un solo uso: el reloj se queda con el muerto y su
+  siguiente refresco da `refresh_token_reused`). Re-autenticar = login
+  nuevo → `bake-personal.sh` → `sideload.sh`, y reabrir el widget para que
+  re-siembre.
 - **Nunca** escribir tokens en `properties.xml` versionado ni imprimirlos;
   `scripts/bake-personal.sh` los hornea y restaura el fichero.
 - `*.prg`, `*.iq`, `bin/`, `fonts-src/local/` jamás en git. Antes de commit:
