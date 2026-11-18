@@ -26,6 +26,7 @@ import json
 import os
 import stat
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -92,6 +93,13 @@ def explain(status: int, data: dict) -> str:
     return "HTTP %d" % status + (": %s" % err if err else "")
 
 
+def net_err(e: BaseException) -> str:
+    """Fallo de red en UNA línea legible (URLError/timeout ya son OSError)."""
+    reason = getattr(e, "reason", None) or e
+    text = str(reason).strip().splitlines()
+    return text[0] if text else e.__class__.__name__
+
+
 def as_int(v, default: int) -> int:
     try:
         return int(v)
@@ -114,13 +122,36 @@ def account_id_from_id_token(id_token: str) -> str:
 
 
 def write_private(path: str, doc: dict) -> None:
-    d = os.path.dirname(path)
+    """Escritura atómica: temporal en el MISMO directorio + os.replace (0600).
+
+    Un crash a mitad no debe dejar el fichero vacío: es el único sitio donde
+    vive el refresh token válido.
+    """
+    d = os.path.dirname(path) or "."
     os.makedirs(d, mode=0o700, exist_ok=True)
     os.chmod(d, 0o700)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        json.dump(doc, f)
-    os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".codex_watch.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(doc, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, stat.S_IRUSR | stat.S_IWUSR)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    try:                       # que el rename también llegue al disco
+        dfd = os.open(d, os.O_RDONLY)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
+    except OSError:
+        pass
 
 
 def save(tok: dict, old: dict) -> None:
@@ -174,8 +205,15 @@ def login() -> None:
     credited = None
     while time.time() < deadline:
         time.sleep(interval)
-        status, d = post_json(DEVICE_TOKEN_URL,
-                              {"device_auth_id": dev_id, "user_code": user_code})
+        try:
+            status, d = post_json(DEVICE_TOKEN_URL,
+                                  {"device_auth_id": dev_id, "user_code": user_code})
+        except OSError as e:
+            # Fallo transitorio (URLError, timeout, DNS): se reintenta dentro
+            # del deadline en vez de abortar con traceback.
+            print("AVISO: fallo de red temporal (%s); reintentando…" % net_err(e),
+                  file=sys.stderr)
+            continue
         if status == 200:
             credited = d
             break
@@ -192,13 +230,17 @@ def login() -> None:
     verifier = credited.get("code_verifier")
     if not code or not verifier:
         sys.exit("ERROR: el servidor no devolvió authorization_code/code_verifier.")
-    status, tok = post_form(TOKEN_URL, {
-        "grant_type": "authorization_code",
-        "client_id": CLIENT_ID,
-        "code": code,
-        "redirect_uri": REDIRECT_URI,
-        "code_verifier": verifier,
-    })
+    try:
+        status, tok = post_form(TOKEN_URL, {
+            "grant_type": "authorization_code",
+            "client_id": CLIENT_ID,
+            "code": code,
+            "redirect_uri": REDIRECT_URI,
+            "code_verifier": verifier,
+        })
+    except OSError as e:
+        # El código es de un solo uso: no se reintenta, pero sin traceback.
+        sys.exit("ERROR: canje fallido por la red: " + net_err(e))
     if status != 200:
         sys.exit("ERROR: canje rechazado: " + explain(status, tok))
     save(tok, {})

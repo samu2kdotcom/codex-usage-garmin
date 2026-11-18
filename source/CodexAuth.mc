@@ -2,6 +2,8 @@ using Toybox.Lang;
 using Toybox.Application;
 using Toybox.Application.Storage;
 using Toybox.Communications;
+using Toybox.Cryptography;
+using Toybox.StringUtil;
 using Toybox.System;
 using Toybox.Time;
 
@@ -18,7 +20,7 @@ using Toybox.Time;
 module CodexAuth {
 
     const AUTH_KEY = "cx_auth";        // { "access", "refresh", "exp" (epoch) }
-    const NOSEED_KEY = "cx_noseed";    // refresh revocado (String) o true: no sembrar
+    const NOSEED_KEY = "cx_noseed";    // HASH del refresh horneado a no sembrar, o true
 
     // Constantes de auth.openai.com (codex-rs/login); el client id es público.
     const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -71,9 +73,9 @@ module CodexAuth {
     }
 
     //! Borra tokens, la instantánea y la cuenta aprendida; revoca el refresh
-    //! en el servidor (mejor esfuerzo). Deja marcado el refresh revocado para
-    //! no volver a sembrarlo desde properties (un token NUEVO, tras re-login
-    //! y re-bake, sí se siembra).
+    //! en el servidor (mejor esfuerzo). Deja marcado (por hash) el refresh
+    //! horneado para no volver a sembrarlo (un token NUEVO, tras re-login y
+    //! re-bake, sí se siembra).
     function logout() as Void {
         var a = load();
         var rt = (a == null) ? null : (a.get("refresh") as Lang.String or Null);
@@ -84,17 +86,56 @@ module CodexAuth {
         }
     }
 
-    //! revoked = refresh token que ya no vale (o null: no sembrar ninguno).
+    //! revoked = refresh token que ya no vale (o null). No se guarda el token:
+    //! cx_noseed recibe el HASH del refresh horneado en properties, que es el
+    //! único que seed() podría volver a sembrar.
     function clear(revoked as Lang.String or Null) as Void {
         Storage.deleteValue(AUTH_KEY);
-        Storage.setValue(NOSEED_KEY, (revoked == null) ? true : revoked as Lang.String);
+        var baked = prop("refresh_token");
+        var target = null as Lang.String or Null;
+        if (baked != null && (baked as Lang.String).length() >= 10) {
+            target = baked;
+        } else if (revoked != null && (revoked as Lang.String).length() > 0) {
+            target = revoked;
+        }
+        var h = (target == null) ? null : hashOf(target as Lang.String);
+        if (h != null) {
+            Storage.setValue(NOSEED_KEY, h as Lang.String);
+        } else {
+            Storage.setValue(NOSEED_KEY, true);
+        }
         sAuth = null;
         sAuthLoaded = true;
+    }
+
+    //! SHA-256 de un token en base64 (nunca se guarda el token en claro), o
+    //! null si el dispositivo no tiene Cryptography.
+    function hashOf(s as Lang.String) as Lang.String or Null {
+        try {
+            var bytes = StringUtil.convertEncodedString(s, {
+                :fromRepresentation => StringUtil.REPRESENTATION_STRING_PLAIN_TEXT,
+                :toRepresentation => StringUtil.REPRESENTATION_BYTE_ARRAY
+            }) as Lang.ByteArray;
+            var h = new Cryptography.Hash({ :algorithm => Cryptography.HASH_SHA256 });
+            h.update(bytes);
+            return StringUtil.convertEncodedString(h.digest(), {
+                :fromRepresentation => StringUtil.REPRESENTATION_BYTE_ARRAY,
+                :toRepresentation => StringUtil.REPRESENTATION_STRING_BASE64
+            }) as Lang.String;
+        } catch (e) {
+            return null;
+        }
     }
 
     //! Tokens en memoria (Storage solo se lee una vez; save/clear/seed la mantienen).
     function load() as Lang.Dictionary or Null {
         if (sAuthLoaded) {
+            if (sAuth != null) {
+                return sAuth;
+            }
+            // Sin sesión: si el refresh horneado es otro (re-bake tras re-login)
+            // se siembra ya, sin esperar a reabrir la app.
+            sAuth = seed();
             return sAuth;
         }
         sAuthLoaded = true;
@@ -112,18 +153,31 @@ module CodexAuth {
 
     //! Siembra Storage desde las propiedades horneadas (scripts/bake-personal.sh):
     //! refresh_token, access_token, access_exp (epoch) y account_id. Solo se
-    //! usa si Storage está vacío y no hubo logout.
+    //! usa si Storage está vacío; se salta el refresh marcado en cx_noseed
+    //! (comparado por hash, sin retener el secreto).
     function seed() as Lang.Dictionary or Null {
         var ns = Storage.getValue(NOSEED_KEY);
         if (ns instanceof Lang.Boolean && (ns as Lang.Boolean)) {
-            return null;        // logout sin refresh conocido
+            return null;        // logout sin refresh horneado conocido
         }
         var rt = prop("refresh_token");
         if (rt == null || rt.length() < 10) {
             return null;
         }
-        if (ns instanceof Lang.String && (ns as Lang.String).equals(rt)) {
-            return null;        // ese refresh concreto ya se revocó
+        var rts = rt as Lang.String;
+        if (ns instanceof Lang.String) {
+            var nss = ns as Lang.String;
+            var h = hashOf(rts);
+            if (nss.equals(rts)) {
+                // cx_noseed de una versión anterior (refresh EN CLARO): se purga.
+                if (h != null) {
+                    Storage.setValue(NOSEED_KEY, h);
+                }
+                return null;
+            }
+            if (h != null && nss.equals(h as Lang.String)) {
+                return null;    // ese refresh horneado ya se descartó
+            }
         }
         Storage.deleteValue(NOSEED_KEY);
         var at = prop("access_token");
@@ -270,12 +324,17 @@ module CodexAuth {
     //! refresh token rota). Devuelve el access token o null si no es válido.
     function storeTokens(d as Lang.Dictionary, fallbackRefresh as Lang.String) as Lang.String or Null {
         var at = d.get("access_token");
-        if (!(at instanceof Lang.String) || (at as Lang.String).length() == 0) {
-            return null;
-        }
         var rt = d.get("refresh_token");
         var refresh = ((rt instanceof Lang.String) && (rt as Lang.String).length() > 0)
             ? (rt as Lang.String) : fallbackRefresh;
+        if (!(at instanceof Lang.String) || (at as Lang.String).length() == 0) {
+            // refresh_token rotado sin access_token: se guarda igual (el
+            // anterior ya no vale) y la siguiente petición lo usa.
+            if (!refresh.equals(fallbackRefresh)) {
+                save("", refresh, 0);
+            }
+            return null;
+        }
         var life = DEFAULT_LIFE_S;
         var ei = d.get("expires_in");
         if (ei instanceof Lang.Number) {

@@ -20,7 +20,8 @@ RESETS_URL="https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
 
 case "${1:-}" in
     -h|--help) sed -n '3,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    ""|--raw) ;;
+    "") ;;
+    --raw) echo "AVISO: --raw vuelca el JSON completo, con PII (email, account_id)." >&2 ;;
     *) echo "uso: scripts/check-usage.sh [--raw]" >&2; exit 2 ;;
 esac
 [ -f "$STORE" ] || { echo "ERROR: falta $STORE (ejecuta scripts/codex-login.py)." >&2; exit 1; }
@@ -97,6 +98,9 @@ try:
 except Exception:
     sys.exit("ERROR: /wham/usage HTTP 200 con body no JSON.")
 account_id = usage.get("account_id") or account_id
+if account_id:
+    # aprendido en la primera respuesta: va también en las cabeceras siguientes
+    base["chatgpt-account-id"] = account_id
 
 rstatus, rbody = get(os.environ["RESETS_URL"])
 resets = None

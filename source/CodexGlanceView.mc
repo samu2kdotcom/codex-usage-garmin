@@ -114,6 +114,7 @@ class CodexGlanceView extends WatchUi.GlanceView {
             dc.drawText(w - pad, y, fRow, pt, Graphics.TEXT_JUSTIFY_RIGHT);
             var bx = pad + lw + pad;
             var bw = w - pad - ptw - pad - bx;
+            if (bw <= 0) { continue; }     // firmware viejo lanza con ancho <= 0
             var bh = (hRow / 5 < 4) ? 4 : hRow / 5;
             var by = y + (hRow - bh) / 2 + 1;
             dc.setColor(pal.track(lv), Graphics.COLOR_TRANSPARENT);

@@ -273,7 +273,13 @@ module UsageStore {
                 CodexAuth.forceRefresh(new Lang.Method($.UsageStore, :onToken));
                 return;
             }
-            finish(false, "Sesión caducada", RETRY_S);
+            // 401 otra vez con un token recién refrescado: el refresh tampoco
+            // vale. Se borra la sesión para no rotarlo en bucle cada 2 min.
+            var cbs = sCbs;
+            CodexAuth.clear(null);
+            clearAll();
+            sCbs = cbs;     // clearAll() los vacía; la vista aún debe refrescar
+            finish(false, "Sin sesión", RETRY_BLOCKED_S);
             return;
         }
         // 403 en chatgpt.com/backend-api es el reto de Cloudflare (a menudo con
@@ -644,9 +650,11 @@ module UsageStore {
     }
 
     //! Epoch de reinicio: reset_at (epoch) o reset_after_seconds desde ahora.
+    //! reset_at se descarta si no cae en 2001..2033 (Number es de 32 bits): en
+    //! ms u otra unidad pintaría una fecha absurda.
     function resetOf(d as Json) as Lang.Number or Null {
         var at = asNumber(d.get("reset_at"));
-        if (at != null) {
+        if (at != null && at > 1000000000 && at < 2000000000) {
             return at;
         }
         var after = asNumber(d.get("reset_after_seconds"));
@@ -670,7 +678,8 @@ module UsageStore {
         return sec + " s";
     }
 
-    //! JSON numérico -> Number; null si no es número.
+    //! JSON numérico -> Number; null si no es número. Acepta strings
+    //! numéricos: la API real manda campos como "2400" en vez de 2400.
     function asNumber(v as Lang.Object or Null) as Lang.Number or Null {
         if (v instanceof Lang.Number) {
             return v as Lang.Number;
@@ -684,10 +693,39 @@ module UsageStore {
         if (v instanceof Lang.Double) {
             return (v as Lang.Double).toNumber();
         }
+        if (v instanceof Lang.String) {
+            return strNumber(v as Lang.String);
+        }
         return null;
     }
 
-    //! JSON numérico -> Float (a prueba de Number/Long/Float/Double); null si no es número.
+    //! String numérico -> Number. String.toNumber() trunca los decimales
+    //! ("1434.58" -> 1434), así que la parte decimal se redondea a mano.
+    function strNumber(s as Lang.String) as Lang.Number or Null {
+        var n = s.toNumber();
+        if (n == null) {
+            return null;
+        }
+        var dot = s.find(".");
+        if (dot == null || dot + 1 >= s.length()) {
+            return n;
+        }
+        var ds = s.substring(dot + 1, dot + 2);
+        if (!(ds instanceof Lang.String)) {
+            return n;
+        }
+        var frac = (ds as Lang.String).toNumber();
+        if (frac == null) {
+            return n;
+        }
+        if ((frac as Lang.Number) < 5) {
+            return n;
+        }
+        return ((n as Lang.Number) >= 0) ? (n as Lang.Number) + 1 : (n as Lang.Number) - 1;
+    }
+
+    //! JSON numérico -> Float (a prueba de Number/Long/Float/Double/String);
+    //! null si no es número. String.toFloat() sí entiende "1434.58".
     function asFloat(v as Lang.Object or Null) as Lang.Float or Null {
         if (v instanceof Lang.Float) {
             return v as Lang.Float;
@@ -700,6 +738,9 @@ module UsageStore {
         }
         if (v instanceof Lang.Long) {
             return (v as Lang.Long).toFloat();
+        }
+        if (v instanceof Lang.String) {
+            return (v as Lang.String).toFloat();
         }
         return null;
     }
