@@ -1,8 +1,11 @@
 <properties>
     <!-- Solo para builds personales (scripts/bake-personal.sh las rellena y
          las restaura vacías). NUNCA versionar un token real aquí.
-         access_exp = epoch de caducidad del access token (cadena). -->
+         refresh_token / access_token: OAuth de ChatGPT (login por device
+         code en el portátil). access_exp = epoch de caducidad del access
+         token (cadena). account_id = chatgpt-account-id (opcional). -->
     <property id="refresh_token" type="string"></property>
     <property id="access_token" type="string"></property>
     <property id="access_exp" type="string"></property>
+    <property id="account_id" type="string"></property>
 </properties>

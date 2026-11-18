@@ -2,15 +2,16 @@
 #
 # scripts/bake-personal.sh [deviceId]      (por defecto fr955)
 #
-# Build PERSONAL: hornea los tokens de ~/.secrets/codex_watch.json (login
-# propio del reloj, scripts/codex-login.py) en las propiedades refresh_token /
-# access_token / access_exp de resources/properties/properties.xml, compila a
-# bin/CodexUsage.personal.prg y RESTAURA properties.xml siempre (trap).
+# Build PERSONAL: hornea la sesión de ~/.secrets/codex_watch.json (login
+# propio por device code, scripts/codex-login.py) en las propiedades
+# refresh_token / access_token / access_exp / account_id de
+# resources/properties/properties.xml, compila a bin/CodexUsage.personal.prg
+# y RESTAURA properties.xml siempre (trap).
 #
 #   - NUNCA imprime tokens (viajan por fichero/entorno dentro de python3).
 #   - El .prg resultante lleva el refresh token en claro: NO compartir, NO
 #     subir a la tienda, NO versionar (bin/ está fuera de git).
-#   - Solo se usan si Storage del reloj no tiene tokens (login propio previo).
+#   - CodexAuth.seed() solo los siembra si Storage del reloj está vacío.
 #
 set -euo pipefail
 
@@ -42,9 +43,10 @@ vals = {
     "refresh_token": tok.get("refresh_token", ""),
     "access_token": tok.get("access_token", ""),
     "access_exp": str(int(tok.get("expires_at", 0))),
+    "account_id": tok.get("account_id", "") or "",
 }
 if not vals["refresh_token"]:
-    sys.exit("ERROR: el fichero de tokens no tiene refresh_token.")
+    sys.exit("ERROR: el fichero de sesión no tiene refresh_token.")
 text = open(path, encoding="utf-8").read()
 for pid, v in vals.items():
     text, n = re.subn(r'(<property\s+id="%s"[^>]*>)(.*?)(</property>)' % pid,
