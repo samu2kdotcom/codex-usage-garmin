@@ -14,11 +14,11 @@ que a su vez proviene de `../nan-usage`).
 - `source/UsageStore.mc` (red, parseo, caché, histórico), `CodexAuth.mc`
   (PKCE, login por Garmin Connect, refresh), `UsageMath.mc` (ritmo).
 - `source/Theme.mc`, `Skin.mc`, `Fmt.mc`, `Pages.mc`, `CodexUsageView.mc`,
-  `CodexGlanceView.mc`, `Spark.mc` (generado): UI.
+  `CodexGlanceView.mc`, `LogoMark.mc` (generado): UI.
 - `resources/` comunes; `resources-<ancho>/` fuentes BMFont y launcher icon por
   resolución (asignadas por producto en `monkey.jungle`).
-- `tools/gen_fonts.py`, `tools/gen_logo.py`: regeneran fuentes y logo (aún
-  los de Claude: ver SPEC.md, Branding).
+- `tools/gen_fonts.py`, `tools/gen_logo.py`: regeneran fuentes (Geist) y logo
+  (blossom de OpenAI; ver SPEC.md, "Branding").
 - `DemoData.mc` + `demo.jungle`: datos de ejemplo (`DEMO=1`), anotación `(:demo)`.
 
 ## Comandos

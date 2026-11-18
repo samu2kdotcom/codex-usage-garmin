@@ -205,14 +205,24 @@ Mismas que claude-usage con este mapeo:
 shapes (ajustar este SPEC); (3) `bake-personal.sh` + `sideload.sh` → probar
 el GET desde el reloj; (4) solo si (3) funciona, intentar la Vía 2.
 
-## Branding — EN CURSO (lane aparte)
+## Branding — HECHO (2026-11-18)
 
-- Isotipo/launcher: `tools/gen_logo.py` + `tools/claude-symbol.svg` generan
-  aún el spark de Claude; sustitución en curso.
-- Paleta y tipografía: `Skin.mc`, `Theme.mc` y `tools/gen_fonts.py` siguen con
-  la piel de claude.ai; sustitución en curso.
-- Capturas: regenerar con `tools/marketing_shots.py` cuando haya branding y
-  datos (o demo) propios.
+- Isotipo/launcher: **blossom de OpenAI 2025** (`tools/openai-blossom.svg`,
+  Wikimedia Commons, dominio público, documentado en `gen_logo.py`):
+  rasterizado a un sexto y dibujado 6 veces girado 60°
+  (`tools/gen_logo.py` → `source/LogoMark.mc`, sustituye a `Spark.mc`);
+  launcher icons teal sobre `#212121` (MIP: `#00AA55` sobre negro).
+- Paleta: ChatGPT modo oscuro (`Skin.mc`/`Theme.mc`): fondo `#212121` /
+  tarjeta `#2F2F2F`, texto `#ECECEC`, secundario `#9E9E9E`, marca/normal
+  `#10A37F`, aviso `#E9A23B`, crítico `#EF4146`; tabla de cuantización MIP
+  64 colores reescrita.
+- Tipografía: **Geist Sans** (títulos 600, cuerpo 500, secundario 400) +
+  **Geist Mono 500** para las cifras del héroe (tabulares). OFL 1.1 en
+  `fonts-src/` con su licencia; ids `Hero`/`Title`/`Body`/`Small`;
+  interlínea fijada a la del diseño anterior (la natural movía la retícula).
+- Capturas: `tools/marketing_shots.py` listo (fondo `#0E0E0E`, halo teal);
+  regenerar cuando haya datos propios. `gen_logo.py` necesita `numpy` +
+  `cairosvg` (o `rsvg-convert`/`magick`).
 
 ## Fuentes
 
