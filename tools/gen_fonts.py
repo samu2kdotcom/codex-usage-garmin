@@ -5,16 +5,18 @@ Salida: resources-<ancho>/fonts/{fonts.xml, *.fnt, *_0.png} por resolución
 (240, 260, 280, 416, 454). Los tamaños base están dados para 260 px y se
 escalan por ancho/260.
 
-Por defecto usa lookalikes libres (OFL) de fonts-src/:
-  serif  Source Serif 4  ~ serif de titulares de claude.ai ("Uso", "Claude")
-  sans   Figtree         ~ sans de cuerpo
-Para usar tus propias fuentes (p. ej. las de Anthropic que tengas licenciadas;
-NO se incluyen en el repo) pásalas por parámetro, o déjalas en fonts-src/local/
-(ignorado por git):
+Por defecto usa tipografías libres (OFL) de fonts-src/, el par que más se
+acerca a la identidad de ChatGPT/Codex:
+  mono   Geist Mono  ~ cifras del héroe (tabulares, aire de terminal de Codex)
+  sans   Geist       ~ títulos y cuerpo (grotesca suiza, el relevo libre de Söhne)
+Söhne, la tipografía real de la interfaz de ChatGPT, es propietaria: Geist es
+la aproximación OFL más cercana (misma familia de grotescas neutras, mismas
+proporciones cerradas). Para usar tus propias fuentes pásalas por parámetro, o
+déjalas en fonts-src/local/ (ignorado por git):
 
-  python3 -I tools/gen_fonts.py --serif fonts-src/local/Serif.otf --sans fonts-src/local/Sans.otf
+  python3 -I tools/gen_fonts.py --mono fonts-src/local/Mono.otf --sans fonts-src/local/Sans.otf
 
-Si la fuente es variable, se fija el peso (--serif-weight / --sans-weight) y el
+Si la fuente es variable, se fija el peso (--mono-weight / --sans-weight) y el
 tamaño óptico se ajusta solo. Requiere Python 3 + Pillow (con FreeType).
 """
 import argparse, os, sys
@@ -31,12 +33,17 @@ DIGITS = "0123456789% :.,-/"
 # ancho de pantalla -> carpeta
 WIDTHS = [240, 260, 280, 416, 454]
 
-# id, familia, peso, tamaño base (a 260 px), charset
+# id, familia, peso, tamaño base (a 260 px), charset, interlínea (em)
+#
+# La interlínea se fija a la del diseño original (la misma retícula que ya está
+# medida en Pages.mc: filas a hSmall + 7 px, párrafos con hSmall) en vez de la
+# que trae la TTF, que en Geist es más holgada (~1.37 em) y bajaba la última
+# fila de la pantalla principal encima de los puntos de página.
 FONTS = [
-    ("SerifHero", "serif", 500, 56, DIGITS),
-    ("SerifTitle", "serif", 500, 25, FULL),
-    ("SansBody", "sans", 500, 19, FULL),
-    ("SansSmall", "sans", 400, 15, FULL),
+    ("Hero", "mono", 500, 56, DIGITS, 1.39),
+    ("Title", "sans", 600, 25, FULL, 1.40),
+    ("Body", "sans", 500, 19, FULL, 1.25),
+    ("Small", "sans", 400, 15, FULL, 1.24),
 ]
 
 
@@ -62,11 +69,13 @@ def open_font(path, px, weight):
     return f
 
 
-def build(path, px, weight, charset, fid, outdir, aa=True):
+def build(path, px, weight, charset, fid, outdir, aa=True, line_em=None):
     f = open_font(path, px, weight)
     asc, desc = f.getmetrics()
     base = asc
     line = asc + desc
+    if line_em:
+        line = max(asc + 1, int(round(px * line_em)))
     glyphs = []
     for ch in charset:
         l, t, r, b = f.getbbox(ch, anchor="ls")
@@ -113,13 +122,13 @@ def build(path, px, weight, charset, fid, outdir, aa=True):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--serif", default=os.path.join(ROOT, "fonts-src", "SourceSerif4.ttf"))
-    ap.add_argument("--sans", default=os.path.join(ROOT, "fonts-src", "Figtree.ttf"))
-    ap.add_argument("--serif-weight", type=int, default=None, help="peso de la serif variable (por defecto 500)")
-    ap.add_argument("--sans-weight", type=int, default=None, help="peso base de la sans variable (por defecto 400/500)")
+    ap.add_argument("--mono", default=os.path.join(ROOT, "fonts-src", "GeistMono.ttf"))
+    ap.add_argument("--sans", default=os.path.join(ROOT, "fonts-src", "Geist.ttf"))
+    ap.add_argument("--mono-weight", type=int, default=None, help="peso de la mono variable (por defecto 500)")
+    ap.add_argument("--sans-weight", type=int, default=None, help="peso base de la sans variable (por defecto 400/500/600)")
     ap.add_argument("--no-aa", action="store_true", help="sin antialias")
     a = ap.parse_args()
-    paths = {"serif": a.serif, "sans": a.sans}
+    paths = {"mono": a.mono, "sans": a.sans}
     for k, p in paths.items():
         if not os.path.isfile(p):
             sys.exit("no existe la fuente %s: %s" % (k, p))
@@ -129,13 +138,14 @@ def main():
         os.makedirs(outdir, exist_ok=True)
         xml = ["<resources>", "    <fonts>"]
         info = []
-        for fid, fam, wt, base, cs in FONTS:
-            if fam == "serif" and a.serif_weight:
-                wt = a.serif_weight
+        for fid, fam, wt, base, cs, line_em in FONTS:
+            if fam == "mono" and a.mono_weight:
+                wt = a.mono_weight
             if fam == "sans" and a.sans_weight:
                 wt = a.sans_weight + (wt - 400)
             px = max(8, round(base * s))
-            line, n, area = build(paths[fam], px, wt, cs, fid, outdir, aa=not a.no_aa)
+            line, n, area = build(paths[fam], px, wt, cs, fid, outdir,
+                                  aa=not a.no_aa, line_em=line_em)
             xml.append('        <font id="%s" filename="%s.fnt" antialias="true"/>' % (fid, fid))
             info.append("%s %dpx(h%d,%d glifos)" % (fid, px, line, n))
         xml += ["    </fonts>", "</resources>"]

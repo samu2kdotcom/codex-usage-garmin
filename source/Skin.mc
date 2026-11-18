@@ -13,8 +13,8 @@ class Skin {
     var cy as Lang.Number;
     var s as Lang.Float;
     var rSafe as Lang.Number;           //!< radio seguro del cristal
-    var fHero as Graphics.FontType;     //!< serif, solo cifras (grande)
-    var fTitle as Graphics.FontType;    //!< serif, títulos
+    var fHero as Graphics.FontType;     //!< mono, solo cifras (grande)
+    var fTitle as Graphics.FontType;    //!< sans gruesa, títulos
     var fBody as Graphics.FontType;     //!< sans, etiquetas
     var fSmall as Graphics.FontType;    //!< sans, secundario
     var hSmall as Lang.Number;
@@ -31,10 +31,10 @@ class Skin {
         cy = h / 2;
         s = ((w < h) ? w : h) / 260.0;
         rSafe = ((w < h) ? w : h) / 2 - sc(6);
-        fHero = WatchUi.loadResource(Rez.Fonts.SerifHero) as Graphics.FontType;
-        fTitle = WatchUi.loadResource(Rez.Fonts.SerifTitle) as Graphics.FontType;
-        fBody = WatchUi.loadResource(Rez.Fonts.SansBody) as Graphics.FontType;
-        fSmall = WatchUi.loadResource(Rez.Fonts.SansSmall) as Graphics.FontType;
+        fHero = WatchUi.loadResource(Rez.Fonts.Hero) as Graphics.FontType;
+        fTitle = WatchUi.loadResource(Rez.Fonts.Title) as Graphics.FontType;
+        fBody = WatchUi.loadResource(Rez.Fonts.Body) as Graphics.FontType;
+        fSmall = WatchUi.loadResource(Rez.Fonts.Small) as Graphics.FontType;
         hSmall = dc.getFontHeight(fSmall);
         hBody = dc.getFontHeight(fBody);
     }
@@ -91,8 +91,8 @@ class Skin {
         dc.drawText(x, base - Graphics.getFontAscent(font), font, txt, just);
     }
 
-    //! Título serif centrado en la línea base; la cuerda se mide sobre la TINTA
-    //! (altura de versal), no sobre toda la celda. Si no cabe, baja a la sans.
+    //! Título centrado en la línea base; la cuerda se mide sobre la TINTA
+    //! (altura de versal), no sobre toda la celda. Si no cabe, baja al cuerpo.
     function title(dc as Graphics.Dc, txt as Lang.String, base as Lang.Number) as Void {
         var f = fTitle;
         var ink = Graphics.getFontAscent(f) * 7 / 10;
@@ -197,11 +197,12 @@ class Skin {
         return yTop + lines.size() * lineH;
     }
 
-    //! Indicador de pantalla: puntos discretos abajo.
+    //! Indicador de pantalla: puntos discretos abajo. Pegados al borde: la
+    //! última fila de la pantalla de uso (Créditos) acaba justo encima.
     function dots(dc as Graphics.Dc, idx as Lang.Number, n as Lang.Number) as Void {
         var d = sc1(4);
         var gap = sc(9);
-        var y = cy * 2 - sc(20);
+        var y = cy * 2 - sc(17);
         var x0 = cx - ((n - 1) * gap) / 2;
         for (var i = 0; i < n; i++) {
             dc.setColor((i == idx) ? pal.brand : pal.faint, Graphics.COLOR_TRANSPARENT);

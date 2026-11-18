@@ -17,9 +17,9 @@ import sys
 
 from PIL import Image, ImageDraw, ImageFilter
 
-BG_TOP = (0x26, 0x26, 0x24)      # claude.ai modo oscuro
-BG_BOT = (0x14, 0x13, 0x12)
-ORANGE = (0xD9, 0x77, 0x57)
+BG_TOP = (0x21, 0x21, 0x21)      # ChatGPT modo oscuro
+BG_BOT = (0x0E, 0x0E, 0x0E)
+ACCENT = (0x10, 0xA3, 0x7F)      # teal de marca
 
 
 def cutout(skin):
@@ -73,11 +73,11 @@ def background(W, H):
         c = tuple(int(BG_TOP[i] * (1 - t) + BG_BOT[i] * t) for i in range(3))
         for xx in range(W):
             px[xx, yy] = c
-    # halo naranja muy suave detrás del reloj
+    # halo teal muy suave detrás del reloj
     glow = Image.new("RGB", (W, H), (0, 0, 0))
     gd = ImageDraw.Draw(glow)
     r = int(min(W, H) * 0.36)
-    gd.ellipse((W // 2 - r, H // 2 - r, W // 2 + r, H // 2 + r), fill=ORANGE)
+    gd.ellipse((W // 2 - r, H // 2 - r, W // 2 + r, H // 2 + r), fill=ACCENT)
     glow = glow.filter(ImageFilter.GaussianBlur(r * 0.55))
     return Image.blend(bg, Image.composite(glow, bg, Image.new("L", (W, H), 255)), 0.16)
 

@@ -1,8 +1,8 @@
 <resources>
     <fonts>
-        <font id="SerifHero" filename="SerifHero.fnt" antialias="true"/>
-        <font id="SerifTitle" filename="SerifTitle.fnt" antialias="true"/>
-        <font id="SansBody" filename="SansBody.fnt" antialias="true"/>
-        <font id="SansSmall" filename="SansSmall.fnt" antialias="true"/>
+        <font id="Hero" filename="Hero.fnt" antialias="true"/>
+        <font id="Title" filename="Title.fnt" antialias="true"/>
+        <font id="Body" filename="Body.fnt" antialias="true"/>
+        <font id="Small" filename="Small.fnt" antialias="true"/>
     </fonts>
 </resources>
