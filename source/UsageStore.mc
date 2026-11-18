@@ -5,27 +5,36 @@ using Toybox.Application.Storage;
 using Toybox.Communications;
 using Toybox.Time;
 
-//! Instantánea del uso de la cuenta (SPEC.md, "Instantánea"): petición al
-//! endpoint de uso, parseo, histórico y estado de error. Solo proceso
-//! principal (la glance lee Storage directamente).
+//! Instantánea del uso de la cuenta ChatGPT/Codex (SPEC.md, "Instantánea"):
+//! GET a /wham/usage + /wham/rate-limit-reset-credits, clasificación de
+//! ventanas por limit_window_seconds, histórico y estado de error. Solo
+//! proceso principal (la glance lee Storage directamente).
 //!
-//! PLACEHOLDER — CONTRATO SIN SUSTITUIR: USAGE_URL y el parseo son aún los
-//! de la API de Claude, copiados de ../claude-usage. El endpoint de uso de
-//! ChatGPT/Codex y su shape se cierran en SPEC.md. El modo DEMO funciona.
+//! La API es interna y sin documentar: el parseo se aísla aquí y degrada con
+//! mensajes claros ("Respuesta inválida", "Bloqueado (Cloudflare)"). Nunca se
+//! imprimen tokens.
 typedef Json as Lang.Dictionary<Lang.String, Lang.Object or Null>;
 
 module UsageStore {
 
-    const SNAP_KEY = "cu_snap";
-    const FETCH_KEY = "cu_fetch";
-    const ERR_KEY = "cu_err";
-    const HIST_KEY = "cu_hist";
-    const ATTEMPT_KEY = "cu_attempt";   // [epoch del último intento fallido, espera en s]
+    const SNAP_KEY = "cx_snap";
+    const FETCH_KEY = "cx_fetch";
+    const ERR_KEY = "cx_err";
+    const HIST_KEY = "cx_hist";
+    const ATTEMPT_KEY = "cx_attempt";   // [epoch del último intento fallido, espera en s]
+    const AID_KEY = "cx_aid";           // chatgpt-account-id aprendido (lo siembra CodexAuth.seed())
 
-    const USAGE_URL = "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1";
+    const USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
+    const RESETS_URL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
+    const ORIGINATOR = "codex_cli_rs";  // allowlist de primera parte de OpenAI
+
+    const W_SESSION = 18000;    // ventana de 5 h
+    const W_WEEK = 604800;      // ventana semanal
+
     const FRESH_S = 300;        // sync(false) no hace red si el dato tiene < 5 min
     const RETRY_S = 120;        // ni reintenta antes de 2 min tras un fallo
-    const RETRY_429_S = 600;    // ni antes de 10 min si el reintento con token nuevo también da 429
+    const RETRY_429_S = 600;    // ni antes de 10 min si da 429
+    const RETRY_BLOCKED_S = 1800;   // Cloudflare: backoff largo, sin bucle
     const BUSY_S = 60;          // una petición en vuelo caduca a los 60 s
     const HIST_MAX = 96;
     const HIST_GAP_S = 900;     // ≥ 15 min entre muestras salvo que cambie el % semanal
@@ -43,7 +52,11 @@ module UsageStore {
     var sErr as Lang.String or Null = null;
     var sHist as Lang.Array = [];
     var sAttempt as Lang.Array or Null = null;
+    var sAid as Lang.String or Null = null;
+    var sToken as Lang.String or Null = null;   // access token del ciclo en vuelo
     var sVer as Lang.Number = 0;        // sube cuando cambian snapshot/histórico
+    // Instantánea a la espera del segundo GET (reset credits) en este ciclo.
+    var sPending as Json or Null = null;
 
     function ensure() as Void {
         if (sLoaded) {
@@ -60,6 +73,8 @@ module UsageStore {
         sHist = (v instanceof Lang.Array) ? (v as Lang.Array) : [];
         v = Storage.getValue(ATTEMPT_KEY);
         sAttempt = (v instanceof Lang.Array && (v as Lang.Array).size() >= 2) ? (v as Lang.Array) : null;
+        v = Storage.getValue(AID_KEY);
+        sAid = (v instanceof Lang.String && (v as Lang.String).length() > 0) ? (v as Lang.String) : null;
     }
 
     // ------------------------------------------------------------------
@@ -105,6 +120,12 @@ module UsageStore {
         return sHist;
     }
 
+    //! account_id conocido (chatgpt-account-id), o null.
+    function accountId() as Lang.String or Null {
+        ensure();
+        return sAid;
+    }
+
     //! Borra datos y errores (logout) y vacía la caché.
     function clearAll() as Void {
         Storage.deleteValue(SNAP_KEY);
@@ -112,12 +133,15 @@ module UsageStore {
         Storage.deleteValue(ERR_KEY);
         Storage.deleteValue(HIST_KEY);
         Storage.deleteValue(ATTEMPT_KEY);
+        Storage.deleteValue(AID_KEY);
         sLoaded = true;
         sSnap = null;
         sFetch = null;
         sErr = null;
         sHist = [];
         sAttempt = null;
+        sAid = null;
+        sPending = null;
         sVer++;
         sBusy = false;
         sCbs = [];
@@ -198,6 +222,8 @@ module UsageStore {
         sBusy = true;
         sBusyAt = now;
         sRetried = false;
+        sPending = null;
+        sToken = null;
         sCbs = (cb != null) ? [cb] : [];
         CodexAuth.getAccessToken(new Lang.Method($.UsageStore, :onToken));
     }
@@ -207,41 +233,57 @@ module UsageStore {
             finish(false, err, RETRY_S);
             return;
         }
+        var t = token as Lang.String;
+        sToken = t;
         Communications.makeWebRequest(
             USAGE_URL,
             null,
             {
                 :method => Communications.HTTP_REQUEST_METHOD_GET,
-                :headers => {
-                    "Authorization" => "Bearer " + token,
-                    "anthropic-beta" => "oauth-2025-04-20",
-                    "User-Agent" => CodexAuth.USER_AGENT,
-                    "Accept" => "application/json"
-                },
+                :headers => headers(t),
                 :responseType => Communications.HTTP_RESPONSE_CONTENT_TYPE_JSON
             },
             new Lang.Method($.UsageStore, :onUsage)
         );
     }
 
+    //! Cabeceras del SPEC ("Fuente de datos"): UA propio + originator de primera
+    //! parte (Cloudflare) y chatgpt-account-id cuando se conoce.
+    function headers(token as Lang.String) as Lang.Dictionary {
+        var h = {
+            "Authorization" => "Bearer " + token,
+            "Accept" => "application/json",
+            "User-Agent" => CodexAuth.USER_AGENT,
+            "originator" => ORIGINATOR
+        };
+        var aid = accountId();
+        if (aid != null) {
+            h.put("chatgpt-account-id", aid as Lang.String);
+        }
+        return h;
+    }
+
     function onUsage(code as Lang.Number, data as Lang.Dictionary or Lang.String or Null) as Void {
-        System.println("cu usage " + code + (sRetried ? " (reintento)" : "")
+        System.println("cx usage " + code + (sRetried ? " (reintento)" : "")
             + ((code != 200) ? (" " + CodexAuth.errType(data)) : ""));
-        // 429: /api/oauth/usage limita POR ACCESS TOKEN (anthropics/claude-code
-        // #30930, 429 persistente con retry-after: 0). Un token nuevo trae cubo
-        // nuevo: refrescar (el reloj tiene su propia cadena de tokens, no rompe
-        // a nadie) y reintentar una vez. 401: token caducado, mismo camino.
-        if (code == 401 || code == 429) {
+        // 401 ⇒ un refresh + un reintento (el access token JWT caduca ~1 h).
+        if (code == 401) {
             if (!sRetried) {
                 sRetried = true;
                 CodexAuth.forceRefresh(new Lang.Method($.UsageStore, :onToken));
                 return;
             }
-            if (code == 401) {
-                finish(false, "Sesión caducada", RETRY_S);
-            } else {
-                finish(false, "API saturada (429)", RETRY_429_S);
-            }
+            finish(false, "Sesión caducada", RETRY_S);
+            return;
+        }
+        // 403 en chatgpt.com/backend-api es el reto de Cloudflare (a menudo con
+        // body HTML): mensaje claro y backoff largo, sin bucle.
+        if (code == 403) {
+            finish(false, "Bloqueado (Cloudflare)", RETRY_BLOCKED_S);
+            return;
+        }
+        if (code == 429) {
+            finish(false, "API saturada (429)", RETRY_429_S);
             return;
         }
         if (code != 200) {
@@ -257,14 +299,58 @@ module UsageStore {
             release(false);
             return;
         }
-        var now = Time.now().value();
-        var snap = parseSnapshot(data as Json);
+        var d = data as Json;
+        // account_id: se aprende en la primera respuesta y se manda en adelante.
+        var aid = d.get("account_id");
+        if (aid instanceof Lang.String && (aid as Lang.String).length() > 0) {
+            setAccountId(aid as Lang.String);
+        }
+        var snap = parseSnapshot(d);
         if (snap == null) {
             finish(false, "Respuesta inválida", RETRY_S);
             return;
         }
+        sPending = snap as Json;
+        Communications.makeWebRequest(
+            RESETS_URL,
+            null,
+            {
+                :method => Communications.HTTP_REQUEST_METHOD_GET,
+                :headers => headers((sToken == null) ? "" : sToken as Lang.String),
+                :responseType => Communications.HTTP_RESPONSE_CONTENT_TYPE_JSON
+            },
+            new Lang.Method($.UsageStore, :onResets)
+        );
+    }
+
+    //! Segundo GET del ciclo: reset credits. Si falla, el uso se guarda igual
+    //! (queda el available_count inline de /wham/usage como contador).
+    function onResets(code as Lang.Number, data as Lang.Dictionary or Lang.String or Null) as Void {
+        System.println("cx resets " + code);
+        var snap = sPending;
+        sPending = null;
+        if (snap == null) {
+            return;     // huérfano (logout u otro ciclo)
+        }
+        if (code == 200 && (data instanceof Lang.Dictionary)) {
+            var r = parseResets(data as Json);
+            snap.put("g", r["g"]);
+            var gc = r["gc"];
+            if (gc != null) {
+                snap.put("gc", gc);
+            }
+        }
+        commit(snap);
+    }
+
+    function commit(snap as Json) as Void {
+        if (!CodexAuth.hasCredentials()) {
+            release(false);
+            return;
+        }
+        var now = Time.now().value();
         ensure();
-        sSnap = snap as Lang.Dictionary;
+        sSnap = snap;
         sFetch = now;
         sVer++;
         Storage.setValue(SNAP_KEY, snap as Lang.Dictionary<Application.Storage.KeyType, Application.Storage.ValueType>);
@@ -292,6 +378,8 @@ module UsageStore {
 
     function release(ok as Lang.Boolean) as Void {
         sBusy = false;
+        sPending = null;
+        sToken = null;
         var cbs = sCbs;
         sCbs = [];
         for (var i = 0; i < cbs.size(); i++) {
@@ -299,187 +387,304 @@ module UsageStore {
         }
     }
 
+    //! Guarda el account_id aprendido (Storage y caché) para las cabeceras.
+    function setAccountId(aid as Lang.String) as Void {
+        ensure();
+        if (sAid != null && (sAid as Lang.String).equals(aid)) {
+            return;
+        }
+        sAid = aid;
+        Storage.setValue(AID_KEY, aid);
+    }
+
     // ------------------------------------------------------------------
-    // Parseo
+    // Parseo (SPEC.md, "Instantánea")
     // ------------------------------------------------------------------
 
-    //! JSON de /api/oauth/usage -> instantánea; null si no hay ni sesión ni semana.
+    //! JSON de /wham/usage -> instantánea; null si no trae nada aprovechable.
     function parseSnapshot(d as Json) as Json or Null {
-        var s = null;
-        var w = null;
-        var models = [];
+        var s = null as Lang.Dictionary or Null;
+        var w = null as Lang.Dictionary or Null;
+        var others = [] as Lang.Array;
+        var allowed = null as Lang.Boolean or Null;
 
-        var limits = d.get("limits");
-        if (limits instanceof Lang.Array) {
-            var arr = limits as Lang.Array;
-            for (var i = 0; i < arr.size(); i++) {
-                var lv = arr[i];
-                if (!(lv instanceof Lang.Dictionary)) {
-                    continue;
-                }
-                var l = lv as Json;
-                var kind = l.get("kind");
-                var it = item(l.get("percent"), l.get("resets_at"), l.get("severity"));
-                if (it == null || !(kind instanceof Lang.String)) {
-                    continue;
-                }
-                var k = kind as Lang.String;
-                if (k.equals("session")) {
-                    if (s == null) { s = it; }
-                } else if (k.equals("weekly_all")) {
-                    if (w == null) { w = it; }
-                } else if (k.equals("weekly_scoped")) {
-                    var e = {
-                        "n" => scopeName(l.get("scope")),
-                        "p" => it.get("p"),
-                        "r" => it.get("r"),
-                        "sv" => it.get("sv")
-                    };
-                    models.add(e);
+        var rl = d.get("rate_limit");
+        if (rl instanceof Lang.Dictionary) {
+            var r = rl as Json;
+            var al = r.get("allowed");
+            if (al instanceof Lang.Boolean) {
+                allowed = al as Lang.Boolean;
+            }
+            // Clasificar por limit_window_seconds, NO por posición: en free y
+            // Team la ventana semanal llega como primary_window.
+            var wins = [] as Lang.Array;
+            var pw = windowOf(r.get("primary_window"));
+            if (pw != null) { wins.add(pw); }
+            var sw = windowOf(r.get("secondary_window"));
+            if (sw != null) { wins.add(sw); }
+            for (var i = 0; i < wins.size(); i++) {
+                var e = wins[i] as Lang.Dictionary;
+                var sec = e["sec"] as Lang.Number or Null;
+                if (sec != null && sec == W_SESSION && s == null) {
+                    s = e;
+                } else if (sec != null && sec == W_WEEK && w == null) {
+                    w = e;
+                } else if (sec != null && sec != W_SESSION && sec != W_WEEK) {
+                    others.add(otherWindow(e));
+                } else if (s == null) {
+                    s = e;      // duración desconocida: hueco libre (primero sesión)
+                } else if (w == null) {
+                    w = e;
+                } else {
+                    others.add(otherWindow(e));
                 }
             }
         }
-        if (s == null) {
-            s = windowItem(d.get("five_hour"));
-        }
-        if (w == null) {
-            w = windowItem(d.get("seven_day"));
-        }
-        if (s == null && w == null) {
-            return null;
+
+        var add = additional(d.get("additional_rate_limits"));
+        var cr = codeReview(d.get("code_review_rate_limit"));
+        var x = credits(d.get("credits"), d.get("spend_control"));
+        var pl = d.get("plan_type");
+        var plan = (pl instanceof Lang.String) ? (pl as Lang.String) : null;
+
+        var gc = null as Lang.Number or Null;
+        var rrc = d.get("rate_limit_reset_credits");
+        if (rrc instanceof Lang.Dictionary) {
+            gc = asNumber((rrc as Json).get("available_count"));
         }
 
-        var out = { "m" => models, "b" => breakdown(d.get("seven_day_breakdown")),
-                    "g" => grants(d.get("cedar_ember")), "x" => extra(d.get("extra_usage")) };
+        var out = {
+            "o" => others,
+            "a" => add,
+            "cr" => cr,
+            "g" => [] as Lang.Array,
+            "gc" => gc,
+            "x" => x,
+            "pl" => plan,
+            "al" => allowed
+        };
         if (s != null) { out.put("s", s); }
         if (w != null) { out.put("w", w); }
+
+        if (s == null && w == null && others.size() == 0 && add.size() == 0
+                && cr == null && plan == null) {
+            return null;
+        }
         return out;
     }
 
-    //! { "p", "r", "sv" } o null si falta el porcentaje.
-    function item(pct as Lang.Object or Null, resets as Lang.Object or Null,
-            sev as Lang.Object or Null) as Lang.Dictionary or Null {
-        var p = pctNumber(pct);
+    //! Ventana de uso { "p", "r", "sv", "sec" } o null si no trae porcentaje.
+    //! used_percent es % USADO (no restante) y se acota a 0..100.
+    function windowOf(v as Lang.Object or Null) as Lang.Dictionary or Null {
+        if (!(v instanceof Lang.Dictionary)) {
+            return null;
+        }
+        var dd = v as Json;
+        var p = pctNumber(dd.get("used_percent"));
         if (p == null) {
             return null;
         }
         return {
             "p" => p,
-            "r" => parseIso(resets),
-            "sv" => (sev instanceof Lang.String) ? (sev as Lang.String) : null
+            "r" => resetOf(dd),
+            "sv" => null,
+            "sec" => asNumber(dd.get("limit_window_seconds"))
         };
     }
 
-    function windowItem(v as Lang.Object or Null) as Lang.Dictionary or Null {
+    //! Otra ventana (duración distinta de 5 h / 7 d) para "Otros límites".
+    function otherWindow(e as Lang.Dictionary) as Lang.Dictionary {
+        var sec = e["sec"] as Lang.Number or Null;
+        return {
+            "n" => (sec == null) ? "Otra ventana" : durationName(sec),
+            "p" => e["p"],
+            "r" => e["r"],
+            "sec" => sec
+        };
+    }
+
+    //! additional_rate_limits[] -> filas { "n", "p", "r", "sec" }.
+    //! n = limit_name (p. ej. "GPT-Codex-Spark"); una fila por ventana.
+    function additional(v as Lang.Object or Null) as Lang.Array {
+        var out = [] as Lang.Array;
+        if (!(v instanceof Lang.Array)) {
+            return out;
+        }
+        var arr = v as Lang.Array;
+        for (var i = 0; i < arr.size(); i++) {
+            var itv = arr[i];
+            if (!(itv instanceof Lang.Dictionary)) {
+                continue;
+            }
+            var it = itv as Json;
+            var name = it.get("limit_name");
+            if (!(name instanceof Lang.String)) {
+                name = it.get("metered_feature");
+            }
+            var label = (name instanceof Lang.String) ? (name as Lang.String) : "Extra";
+            var rlv = it.get("rate_limit");
+            if (!(rlv instanceof Lang.Dictionary)) {
+                continue;
+            }
+            var rl = rlv as Json;
+            var p1 = windowOf(rl.get("primary_window"));
+            var p2 = windowOf(rl.get("secondary_window"));
+            if (p1 == null) {
+                p1 = p2;
+                p2 = null;
+            }
+            if (p1 != null) {
+                out.add({ "n" => label, "p" => p1["p"], "r" => p1["r"], "sec" => p1["sec"] });
+            }
+            if (p2 != null) {
+                var sec = p2["sec"] as Lang.Number or Null;
+                out.add({
+                    "n" => label + ((sec == null) ? " · extra" : " · " + durationName(sec)),
+                    "p" => p2["p"],
+                    "r" => p2["r"],
+                    "sec" => sec
+                });
+            }
+        }
+        return out;
+    }
+
+    //! code_review_rate_limit -> { "p", "r" } o null.
+    function codeReview(v as Lang.Object or Null) as Lang.Dictionary or Null {
         if (!(v instanceof Lang.Dictionary)) {
             return null;
         }
-        var dd = v as Json;
-        return item(dd.get("utilization"), dd.get("resets_at"), dd.get("severity"));
+        var vd = v as Json;
+        var win = windowOf(vd.get("primary_window"));
+        if (win == null) {
+            win = windowOf(vd.get("secondary_window"));
+        }
+        if (win == null) {
+            return null;
+        }
+        return { "p" => win["p"], "r" => win["r"] };
     }
 
-    function scopeName(sc as Lang.Object or Null) as Lang.String {
-        if (sc instanceof Lang.Dictionary) {
-            var scd = sc as Json;
-            var m = scd.get("model");
-            if (m instanceof Lang.Dictionary) {
-                var n = (m as Json).get("display_name");
-                if (n instanceof Lang.String) {
-                    return n as Lang.String;
-                }
-            }
-            var sf = scd.get("surface");
-            if (sf instanceof Lang.String) {
-                return sf as Lang.String;
-            }
-            if (sf instanceof Lang.Dictionary) {
-                var sn = (sf as Json).get("display_name");
-                if (sn instanceof Lang.String) {
-                    return sn as Lang.String;
-                }
-            }
-        }
-        return "Modelo";
-    }
-
-    function breakdown(v as Lang.Object or Null) as Lang.Array {
-        var out = [];
-        if (!(v instanceof Lang.Dictionary)) {
-            return out;
-        }
-        var rows = (v as Json).get("rows");
-        if (!(rows instanceof Lang.Array)) {
-            return out;
-        }
-        var arr = rows as Lang.Array;
-        for (var i = 0; i < arr.size(); i++) {
-            var rv = arr[i];
-            if (!(rv instanceof Lang.Dictionary)) {
-                continue;
-            }
-            var r = rv as Json;
-            var p = pctNumber(r.get("percent"));
-            var n = r.get("display_name");
-            if (!(n instanceof Lang.String)) {
-                n = r.get("key");
-            }
-            if (p == null || !(n instanceof Lang.String)) {
-                continue;
-            }
-            out.add({ "n" => n as Lang.String, "p" => p });
-        }
-        return out;
-    }
-
-    function grants(v as Lang.Object or Null) as Lang.Array {
-        var out = [];
-        if (!(v instanceof Lang.Dictionary)) {
-            return out;
-        }
-        var gs = (v as Json).get("grants");
-        if (!(gs instanceof Lang.Array)) {
-            return out;
-        }
-        var arr = gs as Lang.Array;
-        for (var i = 0; i < arr.size(); i++) {
-            var gv = arr[i];
-            if (!(gv instanceof Lang.Dictionary)) {
-                continue;
-            }
-            var g = gv as Json;
-            var leftF = asFloat(g.get("resets_left"));
-            if (leftF == null || leftF <= 0.0) {
-                continue;
-            }
-            var totF = asFloat(g.get("resets_total"));
-            var tot = (totF == null) ? leftF.toNumber() : totF.toNumber();
-            var lbl = g.get("label");
-            var typ = g.get("type");
-            var usable = g.get("usable_now");
-            var paused = g.get("paused");
-            out.add({
-                "l" => (lbl instanceof Lang.String) ? (lbl as Lang.String) : "Restablecimiento",
-                "t" => (typ instanceof Lang.String) ? (typ as Lang.String) : null,
-                "left" => leftF.toNumber(),
-                "tot" => tot,
-                "e" => parseIso(g.get("ends_at")),
-                "u" => (usable instanceof Lang.Boolean) ? (usable as Lang.Boolean) : false,
-                "pz" => (paused instanceof Lang.Boolean) ? (paused as Lang.Boolean) : false
-            });
-        }
-        return out;
-    }
-
-    function extra(v as Lang.Object or Null) as Lang.Dictionary {
+    //! credits + spend_control -> { "on", "bal", "unl", "rc", "sc", "scp", "scr" }.
+    function credits(v as Lang.Object or Null, sc as Lang.Object or Null) as Lang.Dictionary {
         var on = false;
-        var p = null;
+        var bal = null as Lang.Float or Null;
+        var unl = false;
+        var rc = false;
         if (v instanceof Lang.Dictionary) {
-            var d = v as Json;
-            var en = d.get("is_enabled");
-            on = (en instanceof Lang.Boolean) && (en as Lang.Boolean);
-            p = pctNumber(d.get("utilization"));
+            var c = v as Json;
+            var hc = c.get("has_credits");
+            on = (hc instanceof Lang.Boolean) && (hc as Lang.Boolean);
+            var ul = c.get("unlimited");
+            unl = (ul instanceof Lang.Boolean) && (ul as Lang.Boolean);
+            var orl = c.get("overage_limit_reached");
+            rc = (orl instanceof Lang.Boolean) && (orl as Lang.Boolean);
+            bal = asFloat(c.get("balance"));
         }
-        return { "on" => on, "p" => p };
+        var reached = false;
+        var usedPct = null as Lang.Number or Null;
+        var resetAt = null as Lang.Number or Null;
+        if (sc instanceof Lang.Dictionary) {
+            var sp = sc as Json;
+            var r = sp.get("reached");
+            reached = (r instanceof Lang.Boolean) && (r as Lang.Boolean);
+            var il = sp.get("individual_limit");
+            if (il instanceof Lang.Dictionary) {
+                var ild = il as Json;
+                usedPct = pctNumber(ild.get("used_percent"));
+                resetAt = resetOf(ild);
+            }
+        }
+        return {
+            "on" => on,
+            "bal" => bal,
+            "unl" => unl,
+            "rc" => rc,
+            "sc" => reached,
+            "scp" => usedPct,
+            "scr" => resetAt
+        };
+    }
+
+    //! /wham/rate-limit-reset-credits -> { "g": filas, "gc": disponible(s) }.
+    //! Solo se ofrecen los créditos con status "available"; available_count es
+    //! autoritativo (credits[] puede venir truncado).
+    function parseResets(d as Json) as Json {
+        var out = [] as Lang.Array;
+        var creds = d.get("credits");
+        if (creds instanceof Lang.Array) {
+            var arr = creds as Lang.Array;
+            for (var i = 0; i < arr.size(); i++) {
+                var cv = arr[i];
+                if (!(cv instanceof Lang.Dictionary)) {
+                    continue;
+                }
+                var c = cv as Json;
+                var st = c.get("status");
+                if (!(st instanceof Lang.String) || !(st as Lang.String).equals("available")) {
+                    continue;
+                }
+                var id = c.get("id");
+                var l = c.get("title");
+                var t = c.get("reset_type");
+                out.add({
+                    "id" => (id instanceof Lang.String) ? (id as Lang.String) : null,
+                    "l" => (l instanceof Lang.String) ? (l as Lang.String) : "Reinicio",
+                    "t" => (t instanceof Lang.String) ? (t as Lang.String) : null,
+                    "e" => parseIso(c.get("expires_at")),
+                    "st" => st as Lang.String
+                });
+            }
+        }
+        var cnt = asNumber(d.get("available_count"));
+        if (cnt == null) {
+            cnt = out.size();
+        }
+        return { "g" => out, "gc" => cnt };
+    }
+
+    //! Epoch de reinicio: reset_at (epoch) o reset_after_seconds desde ahora.
+    function resetOf(d as Json) as Lang.Number or Null {
+        var at = asNumber(d.get("reset_at"));
+        if (at != null) {
+            return at;
+        }
+        var after = asNumber(d.get("reset_after_seconds"));
+        if (after == null) {
+            return null;
+        }
+        return Time.now().value() + after;
+    }
+
+    //! Duración legible: "5 h", "7 d", "2 h"…
+    function durationName(sec as Lang.Number) as Lang.String {
+        if (sec > 0 && sec % 86400 == 0) {
+            return (sec / 86400) + " d";
+        }
+        if (sec > 0 && sec % 3600 == 0) {
+            return (sec / 3600) + " h";
+        }
+        if (sec >= 60) {
+            return (sec / 60) + " min";
+        }
+        return sec + " s";
+    }
+
+    //! JSON numérico -> Number; null si no es número.
+    function asNumber(v as Lang.Object or Null) as Lang.Number or Null {
+        if (v instanceof Lang.Number) {
+            return v as Lang.Number;
+        }
+        if (v instanceof Lang.Long) {
+            return (v as Lang.Long).toNumber();
+        }
+        if (v instanceof Lang.Float) {
+            return (v as Lang.Float).toNumber();
+        }
+        if (v instanceof Lang.Double) {
+            return (v as Lang.Double).toNumber();
+        }
+        return null;
     }
 
     //! JSON numérico -> Float (a prueba de Number/Long/Float/Double); null si no es número.

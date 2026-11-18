@@ -2,58 +2,41 @@ using Toybox.Lang;
 using Toybox.Application;
 using Toybox.Application.Storage;
 using Toybox.Communications;
-using Toybox.Cryptography;
-using Toybox.StringUtil;
 using Toybox.System;
 using Toybox.Time;
-using Toybox.Timer;
-using Toybox.WatchUi;
 
-//! Tokens OAuth de la cuenta (scope de solo lectura), login PKCE en el reloj
-//! y refresco. Solo este módulo toca Storage["cu_auth"]. NUNCA se imprimen ni
-//! se registran tokens.
+//! Tokens OAuth de ChatGPT/Codex y su refresco (SPEC.md, "Autenticación").
 //!
-//! PLACEHOLDER — CONTRATO SIN SUSTITUIR: CLIENT_ID, AUTHORIZE_URL, TOKEN_URL,
-//! REDIRECT_URI y SCOPE son aún los de Claude, copiados de ../claude-usage.
-//! Sustituir por los de ChatGPT/Codex al cerrar el contrato (SPEC.md,
-//! "Autenticación"). NO hacer login real hasta entonces.
+//! v1: la sesión se crea FUERA del reloj (scripts/codex-login.py, device code)
+//! y llega horneada por scripts/bake-personal.sh; seed() la siembra en Storage
+//! la primera vez. NO se leen ni refrescan los tokens de la CLI de Codex
+//! (~/.codex/auth.json): el refresh token rota y rompería esa sesión.
+//!
+//! El refresh token es de UN SOLO USO: storeTokens() lo persiste en Storage
+//! ANTES de devolver el access token (mismo patrón que ../claude-usage). Solo
+//! este módulo toca Storage["cx_auth"]. NUNCA se imprimen ni registran tokens.
 module CodexAuth {
 
-    const AUTH_KEY = "cu_auth";        // { "access", "refresh", "exp" (epoch) }
-    const LOGIN_KEY = "cu_login";      // { "v" verifier, "st" state, "t" epoch } mientras dura el login
-    const NOSEED_KEY = "cu_noseed";    // true: no volver a sembrar desde properties
+    const AUTH_KEY = "cx_auth";        // { "access", "refresh", "exp" (epoch) }
+    const NOSEED_KEY = "cx_noseed";    // refresh revocado (String) o true: no sembrar
 
-    const CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
-    const AUTHORIZE_URL = "https://claude.com/cai/oauth/authorize";
-    const TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
-    const REDIRECT_URI = "https://platform.claude.com/oauth/code/callback";
-    const SCOPE = "user:profile";
+    // Constantes de auth.openai.com (codex-rs/login); el client id es público.
+    const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
+    const TOKEN_URL = "https://auth.openai.com/oauth/token";
+    const REVOKE_URL = "https://auth.openai.com/oauth/revoke";
     const SKEW_S = 60;                 // refrescar si caduca en < 60 s
-    const LOGIN_TTL_S = 900;
-    const LONG_EXPIRES_S = 31536000;
-    // platform.claude.com/v1/oauth/token responde un 429 FALSO ("Rate limited")
-    // a todo User-Agent que empiece por "Mozilla/5.0" o "curl/" (comprobado:
-    // mismo cuerpo con otro UA -> 400/200). Garmin Connect manda UA de
-    // navegador, así que se fija uno propio en las peticiones de tokens.
-    const USER_AGENT = "CodexUsageGarmin/0.2";
-
-    const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
-    const DIGITS = "0123456789";
+    const DEFAULT_LIFE_S = 3600;       // access token JWT ~1 h si no hay expires_in
+    // Cloudflare de chatgpt.com/auth.openai.com bloquea UA genéricos
+    // (curl/*, reqwest/*): UA propio del reloj en TODAS las peticiones.
+    const USER_AGENT = "CodexUsageGarmin/0.3";
 
     var sAuth as Lang.Dictionary or Null = null;
     var sAuthLoaded as Lang.Boolean = false;
     var sRefreshing as Lang.Boolean = false;
     var sRefreshCbs as Lang.Array = [];
-    var sLoginCb as Lang.Method or Null = null;
-    var sLoginTriedExp as Lang.Boolean = false;
-    var sLoginCode as Lang.String = "";
-    var sLoginState as Lang.String = "";
-    var sLoginVerifier as Lang.String = "";
-    var sExchange429 as Lang.Number = 0;     // reintentos del canje tras 429
-    var sTimer as Timer.Timer or Null = null;
 
-    //! Tipo/mensaje de error de un cuerpo JSON de Anthropic ({"error":{type,message}}
-    //! o {"error":"..."}), para los logs. Nunca contiene tokens.
+    //! Tipo/mensaje de error de un cuerpo JSON ({"error":"..."} o
+    //! {"error":{code,message}}), solo para los logs. Nunca contiene tokens.
     function errType(data as Lang.Object or Null) as Lang.String {
         if (data instanceof Lang.Dictionary) {
             var e = (data as Lang.Dictionary).get("error");
@@ -61,10 +44,13 @@ module CodexAuth {
                 return e as Lang.String;
             }
             if (e instanceof Lang.Dictionary) {
-                var t = (e as Lang.Dictionary).get("type");
-                var m = (e as Lang.Dictionary).get("message");
-                return ((t instanceof Lang.String) ? t as Lang.String : "")
-                    + ((m instanceof Lang.String) ? ": " + m : "");
+                var ed = e as Lang.Dictionary;
+                var c = ed.get("code");
+                var m = ed.get("message");
+                var t = ed.get("type");
+                var head = (c instanceof Lang.String) ? c as Lang.String
+                    : ((t instanceof Lang.String) ? t as Lang.String : "");
+                return head + ((m instanceof Lang.String) ? ": " + m : "");
             }
         }
         return "";
@@ -79,30 +65,29 @@ module CodexAuth {
         return load() != null;
     }
 
-    //! true mientras hay un login iniciado hace < 15 min sin completar.
+    //! v1: no hay login en curso en el reloj (el flujo es por portátil).
     function loginPending() as Lang.Boolean {
-        var l = Storage.getValue(LOGIN_KEY);
-        if (!(l instanceof Lang.Dictionary)) {
-            return false;
-        }
-        var t = (l as Lang.Dictionary).get("t");
-        if (t instanceof Lang.Number) {
-            return (Time.now().value() - (t as Lang.Number)) < LOGIN_TTL_S;
-        }
         return false;
     }
 
-    //! Borra tokens y la instantánea. En builds personales evita que se
-    //! vuelva a sembrar el token horneado.
+    //! Borra tokens, la instantánea y la cuenta aprendida; revoca el refresh
+    //! en el servidor (mejor esfuerzo). Deja marcado el refresh revocado para
+    //! no volver a sembrarlo desde properties (un token NUEVO, tras re-login
+    //! y re-bake, sí se siembra).
     function logout() as Void {
-        clear();
-        Storage.deleteValue(LOGIN_KEY);
+        var a = load();
+        var rt = (a == null) ? null : (a.get("refresh") as Lang.String or Null);
+        clear(rt);
         UsageStore.clearAll();
+        if (rt != null && rt.length() > 0) {
+            revoke(rt);
+        }
     }
 
-    function clear() as Void {
+    //! revoked = refresh token que ya no vale (o null: no sembrar ninguno).
+    function clear(revoked as Lang.String or Null) as Void {
         Storage.deleteValue(AUTH_KEY);
-        Storage.setValue(NOSEED_KEY, true);
+        Storage.setValue(NOSEED_KEY, (revoked == null) ? true : revoked as Lang.String);
         sAuth = null;
         sAuthLoaded = true;
     }
@@ -125,16 +110,22 @@ module CodexAuth {
         return sAuth;
     }
 
-    //! Siembra Storage desde las propiedades horneadas (build personal).
+    //! Siembra Storage desde las propiedades horneadas (scripts/bake-personal.sh):
+    //! refresh_token, access_token, access_exp (epoch) y account_id. Solo se
+    //! usa si Storage está vacío y no hubo logout.
     function seed() as Lang.Dictionary or Null {
         var ns = Storage.getValue(NOSEED_KEY);
-        if ((ns instanceof Lang.Boolean) && (ns as Lang.Boolean)) {
-            return null;
+        if (ns instanceof Lang.Boolean && (ns as Lang.Boolean)) {
+            return null;        // logout sin refresh conocido
         }
         var rt = prop("refresh_token");
         if (rt == null || rt.length() < 10) {
             return null;
         }
+        if (ns instanceof Lang.String && (ns as Lang.String).equals(rt)) {
+            return null;        // ese refresh concreto ya se revocó
+        }
+        Storage.deleteValue(NOSEED_KEY);
         var at = prop("access_token");
         var exp = 0;
         var ex = prop("access_exp");
@@ -151,6 +142,12 @@ module CodexAuth {
         };
         Storage.setValue(AUTH_KEY, a);
         sAuth = a;
+        // account_id horneado: UsageStore.AID_KEY (misma cadena; se evita
+        // referenciar el módulo desde aquí para no acoplar la siembra).
+        var aid = prop("account_id");
+        if (aid != null && aid.length() > 0) {
+            Storage.setValue("cx_aid", aid);
+        }
         return a;
     }
 
@@ -208,15 +205,20 @@ module CodexAuth {
         if (sRefreshing) {
             return;
         }
-        var rt = a.get("refresh") as Lang.String;
+        var rt = a.get("refresh");
+        if (!(rt instanceof Lang.String) || (rt as Lang.String).length() == 0) {
+            sRefreshCbs = [];
+            cb.invoke(false, null, "Sin sesión");
+            return;
+        }
         sRefreshing = true;
+        // SPEC "Refresco": JSON (no form), sin scope.
         Communications.makeWebRequest(
             TOKEN_URL,
             {
                 "grant_type" => "refresh_token",
-                "refresh_token" => rt,
                 "client_id" => CLIENT_ID,
-                "scope" => SCOPE
+                "refresh_token" => rt as Lang.String
             },
             {
                 :method => Communications.HTTP_REQUEST_METHOD_POST,
@@ -233,7 +235,7 @@ module CodexAuth {
 
     function onRefreshResponse(code as Lang.Number,
             data as Lang.Dictionary or Lang.String or Null) as Void {
-        System.println("cu refresh " + code + ((code != 200) ? " " + errType(data) : ""));
+        System.println("cx refresh " + code + ((code != 200) ? " " + errType(data) : ""));
         var cbs = sRefreshCbs;
         sRefreshCbs = [];
         sRefreshing = false;
@@ -251,7 +253,10 @@ module CodexAuth {
                 }
             }
         } else if (code == 400 || code == 401) {
-            clear();
+            // refresh_token_reused / _expired / _invalidated
+            var old = load();
+            var rt = (old == null) ? null : (old.get("refresh") as Lang.String or Null);
+            clear(rt);
             err = "Sesión caducada";
         } else {
             err = errText(code);
@@ -271,17 +276,50 @@ module CodexAuth {
         var rt = d.get("refresh_token");
         var refresh = ((rt instanceof Lang.String) && (rt as Lang.String).length() > 0)
             ? (rt as Lang.String) : fallbackRefresh;
-        var life = 3600;
+        var life = DEFAULT_LIFE_S;
         var ei = d.get("expires_in");
         if (ei instanceof Lang.Number) {
             life = ei as Lang.Number;
         } else if (ei instanceof Lang.Long) {
             life = (ei as Lang.Long).toNumber();
-        } else if (ei instanceof Lang.Float || ei instanceof Lang.Double) {
+        } else if (ei instanceof Lang.Float) {
             life = (ei as Lang.Float).toNumber();
+        } else if (ei instanceof Lang.Double) {
+            life = (ei as Lang.Double).toNumber();
         }
         save(at as Lang.String, refresh, Time.now().value() + life);
         return at as Lang.String;
+    }
+
+    //! Revoca el refresh token (RFC 7009, form-urlencoded). Mejor esfuerzo:
+    //! la respuesta solo se registra en el log y no bloquea el logout.
+    function revoke(rt as Lang.String) as Void {
+        try {
+            Communications.makeWebRequest(
+                REVOKE_URL,
+                {
+                    "token" => rt,
+                    "token_type_hint" => "refresh_token",
+                    "client_id" => CLIENT_ID
+                },
+                {
+                    :method => Communications.HTTP_REQUEST_METHOD_POST,
+                    :headers => {
+                        "Content-Type" => Communications.REQUEST_CONTENT_TYPE_URL_ENCODED,
+                        "Accept" => "application/json",
+                        "User-Agent" => USER_AGENT
+                    },
+                    :responseType => Communications.HTTP_RESPONSE_CONTENT_TYPE_JSON
+                },
+                new Lang.Method($.CodexAuth, :onRevokeResponse)
+            );
+        } catch (e) {
+        }
+    }
+
+    function onRevokeResponse(code as Lang.Number,
+            data as Lang.Dictionary or Lang.String or Null) as Void {
+        System.println("cx revoke " + code);
     }
 
     //! Texto corto en español para un código de makeWebRequest / HTTP.
@@ -311,217 +349,29 @@ module CodexAuth {
     }
 
     // ------------------------------------------------------------------
-    // Login en el reloj (PKCE + Garmin Connect)
+    // Login en el reloj — FUERA de v1
     // ------------------------------------------------------------------
 
-    //! Registra el receptor de mensajes OAuth. Llamar al abrir la app
-    //! (proceso principal): entrega también un resultado en caché si la app
-    //! se cerró durante el login.
-    function register() as Void {
-        Communications.registerForOAuthMessages(new Lang.Method($.CodexAuth, :onOAuthMessage));
-    }
-
-    //! Inicia el login: avisa en el móvil (Garmin Connect) para autorizar.
-    //! cb.invoke(ok as Boolean, err as String or Null) al terminar el canje.
+    //! La Vía 1 del SPEC (device code por portátil) es la única soportada:
+    //! scripts/codex-login.py crea la sesión y scripts/bake-personal.sh la
+    //! hornea. cb.invoke(false, aviso) para que la vista lo muestre.
+    //!
+    //! TODO(Vía 2): login en el reloj, experimental y sin verificar:
+    //! makeOAuthRequest con redirect_uri=http://localhost:1455/auth/callback
+    //! (allowlist Hydra de la CLI) y codex_cli_simplified_flow=true; la doc de
+    //! Garmin espera http://localhost y el puerto no está verificado
+    //! (github.com/garmin/connectiq-apps/issues/30). Solo si OpenAI acepta ese
+    //! redirect; si no, no hay workaround.
+    //! Endpoints de referencia: https://auth.openai.com/oauth/authorize y la
+    //! página del device code (https://auth.openai.com/codex/device, Vía 1).
     function startLogin(cb as Lang.Method or Null) as Void {
-        if (BuildFlags.isDemo()) {
-            if (cb != null) {
-                cb.invoke(false, "Modo demo");
-            }
-            return;
-        }
-        sLoginCb = cb;
-        var verifier = randomString(64);
-        var state = randomString(32);
-        var plain = false;
-        var challenge = s256(verifier);
-        if (challenge == null) {
-            // Sin Cryptography/Hash en este dispositivo: el servidor acepta "plain".
-            plain = true;
-            challenge = verifier;
-        }
-        Storage.setValue(LOGIN_KEY, { "v" => verifier, "st" => state, "t" => Time.now().value() });
-        try {
-            Communications.makeOAuthRequest(
-                AUTHORIZE_URL,
-                {
-                    "code" => "true",
-                    "client_id" => CLIENT_ID,
-                    "response_type" => "code",
-                    "redirect_uri" => REDIRECT_URI,
-                    "scope" => SCOPE,
-                    "code_challenge" => challenge,
-                    "code_challenge_method" => plain ? "plain" : "S256",
-                    "state" => state
-                },
-                REDIRECT_URI,
-                Communications.OAUTH_RESULT_TYPE_URL,
-                { "code" => "cu_code", "state" => "cu_state", "error" => "cu_error" }
-            );
-        } catch (e) {
-            finishLogin(false, "Sin teléfono");
-        }
-    }
-
-    //! Cadena aleatoria de n caracteres del alfabeto PKCE [A-Za-z0-9-._~].
-    function randomString(n as Lang.Number) as Lang.String {
-        var out = "";
-        var len = ALPHABET.length();
-        var bytes = null;
-        try {
-            bytes = Cryptography.randomBytes(n);
-        } catch (e) {
-            bytes = null;
-        }
-        for (var i = 0; i < n; i++) {
-            var r = (bytes != null) ? (bytes as Lang.ByteArray)[i] : Toybox.Math.rand();
-            if (r < 0) {
-                r = -r;
-            }
-            var k = r % len;
-            out += ALPHABET.substring(k, k + 1);
-        }
-        return out;
-    }
-
-    //! base64url(SHA-256(verifier)) sin relleno, o null si no se puede.
-    function s256(verifier as Lang.String) as Lang.String or Null {
-        try {
-            var bytes = StringUtil.convertEncodedString(verifier, {
-                :fromRepresentation => StringUtil.REPRESENTATION_STRING_PLAIN_TEXT,
-                :toRepresentation => StringUtil.REPRESENTATION_BYTE_ARRAY
-            }) as Lang.ByteArray;
-            var h = new Cryptography.Hash({ :algorithm => Cryptography.HASH_SHA256 });
-            h.update(bytes);
-            var b64 = StringUtil.convertEncodedString(h.digest(), {
-                :fromRepresentation => StringUtil.REPRESENTATION_BYTE_ARRAY,
-                :toRepresentation => StringUtil.REPRESENTATION_STRING_BASE64
-            }) as Lang.String;
-            var out = "";
-            for (var i = 0; i < b64.length(); i++) {
-                var c = b64.substring(i, i + 1) as Lang.String;
-                if (c.equals("+")) {
-                    out += "-";
-                } else if (c.equals("/")) {
-                    out += "_";
-                } else if (ALPHABET.find(c) != null && !c.equals(".") && !c.equals("~")) {
-                    out += c;
-                }
-                // '=' y saltos de línea se descartan
-            }
-            return (out.length() == 43) ? out : null;
-        } catch (e) {
-            return null;
-        }
-    }
-
-    //! Resultado de la autorización (callback de registerForOAuthMessages).
-    function onOAuthMessage(msg as Communications.OAuthMessage) as Void {
-        var d = msg.data;
-        if (!(d instanceof Lang.Dictionary)) {
-            finishLogin(false, "Login cancelado");
-            return;
-        }
-        var dd = d as Lang.Dictionary;
-        var l = Storage.getValue(LOGIN_KEY);
-        if (!(l instanceof Lang.Dictionary)) {
-            return;   // mensaje huérfano (login ya terminado o caducado)
-        }
-        var ld = l as Lang.Dictionary;
-        var code = dd.get("cu_code");
-        if (!(code instanceof Lang.String) || (code as Lang.String).length() == 0) {
-            finishLogin(false, "Login rechazado");
-            return;
-        }
-        var codeS = code as Lang.String;
-        var hash = codeS.find("#");     // por si llega "code#state"
-        if (hash != null && hash > 0) {
-            codeS = codeS.substring(0, hash) as Lang.String;
-        }
-        var stored = ld.get("st");
-        var got = dd.get("cu_state");
-        if ((got instanceof Lang.String) && (stored instanceof Lang.String)
-                && !(got as Lang.String).equals(stored as Lang.String)) {
-            finishLogin(false, "Login inválido");
-            return;
-        }
-        sLoginCode = codeS;
-        sLoginState = (stored instanceof Lang.String) ? (stored as Lang.String) : "";
-        sLoginVerifier = ld.get("v") as Lang.String;
-        sLoginTriedExp = true;
-        sExchange429 = 0;
-        exchange(true);
-    }
-
-    function retryExchange() as Void {
-        sTimer = null;
-        exchange(sLoginTriedExp);
-    }
-
-    function exchange(withExpires as Lang.Boolean) as Void {
-        var body = {
-            "grant_type" => "authorization_code",
-            "code" => sLoginCode,
-            "state" => sLoginState,
-            "client_id" => CLIENT_ID,
-            "redirect_uri" => REDIRECT_URI,
-            "code_verifier" => sLoginVerifier
-        };
-        if (withExpires) {
-            body.put("expires_in", LONG_EXPIRES_S);
-        }
-        Communications.makeWebRequest(TOKEN_URL, body, {
-            :method => Communications.HTTP_REQUEST_METHOD_POST,
-            :headers => {
-                "Content-Type" => Communications.REQUEST_CONTENT_TYPE_JSON,
-                "Accept" => "application/json",
-                "User-Agent" => USER_AGENT
-            },
-            :responseType => Communications.HTTP_RESPONSE_CONTENT_TYPE_JSON
-        }, new Lang.Method($.CodexAuth, :onExchangeResponse));
-    }
-
-    function onExchangeResponse(code as Lang.Number,
-            data as Lang.Dictionary or Lang.String or Null) as Void {
-        System.println("cu exchange " + code + (sLoginTriedExp ? " (expires_in)" : "")
-            + ((code != 200) ? " " + errType(data) : ""));
-        if (code == 400 && sLoginTriedExp) {
-            sLoginTriedExp = false;      // reintento sin expires_in
-            exchange(false);
-            return;
-        }
-        if (code == 429 && sExchange429 < 2) {
-            // Límite de peticiones del endpoint de tokens: reintento a los 3 s
-            // (el código aún no se ha consumido).
-            sExchange429 += 1;
-            sTimer = new Timer.Timer();
-            (sTimer as Timer.Timer).start(new Lang.Method($.CodexAuth, :retryExchange), 3000, false);
-            return;
-        }
-        if (code == 200 && (data instanceof Lang.Dictionary)) {
-            var t = storeTokens(data as Lang.Dictionary, "");
-            var a = load();
-            if (t != null && a != null) {
-                Storage.deleteValue(NOSEED_KEY);
-                UsageStore.clearError();
-                finishLogin(true, null);
-                return;
-            }
-            finishLogin(false, "Respuesta inválida");
-            return;
-        }
-        finishLogin(false, (code == 400 || code == 401) ? "Login rechazado" : errText(code));
-    }
-
-    function finishLogin(ok as Lang.Boolean, err as Lang.String or Null) as Void {
-        Storage.deleteValue(LOGIN_KEY);
-        sLoginCode = "";
-        sLoginVerifier = "";
-        var cb = sLoginCb;
-        sLoginCb = null;
         if (cb != null) {
-            cb.invoke(ok, err);
+            cb.invoke(false, "Login: ejecuta scripts/codex-login.py en el portátil y scripts/bake-personal.sh");
         }
-        WatchUi.requestUpdate();
+    }
+
+    //! Sin efecto en v1; CodexUsageApp la llama al abrir la app y la Vía 2 la
+    //! necesitaría para recibir el resultado OAuth de Garmin Connect.
+    function register() as Void {
     }
 }
