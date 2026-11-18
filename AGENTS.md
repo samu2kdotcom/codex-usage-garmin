@@ -12,7 +12,8 @@ que a su vez proviene de `../nan-usage`).
 ## Estructura
 
 - `source/UsageStore.mc` (red, parseo, caché, histórico), `CodexAuth.mc`
-  (PKCE, login por Garmin Connect, refresh), `UsageMath.mc` (ritmo).
+  (tokens OAuth de ChatGPT, refresh, seed desde properties), `UsageMath.mc`
+  (ritmo).
 - `source/Theme.mc`, `Skin.mc`, `Fmt.mc`, `Pages.mc`, `CodexUsageView.mc`,
   `CodexGlanceView.mc`, `LogoMark.mc` (generado): UI.
 - `resources/` comunes; `resources-<ancho>/` fuentes BMFont y launcher icon por
@@ -20,6 +21,26 @@ que a su vez proviene de `../nan-usage`).
 - `tools/gen_fonts.py`, `tools/gen_logo.py`: regeneran fuentes (Geist) y logo
   (blossom de OpenAI; ver SPEC.md, "Branding").
 - `DemoData.mc` + `demo.jungle`: datos de ejemplo (`DEMO=1`), anotación `(:demo)`.
+
+## UI (reglas del rediseño)
+
+- **Marca**: el isotipo (blossom) va **solo** en la pantalla Uso, grande
+  (34 px sobre base 260, escala con el ancho); las demás páginas llevan solo
+  título, con línea base 58. No repetir el isotipo por página ni poner
+  "Codex" junto a él. Glance: sin isotipo (el sistema ya pinta el launcher).
+- **Filas clave/valor**: `Skin.kvRow` alinea etiqueta y valor por línea base;
+  cifras del héroe en Geist Mono (tabulares, "%" en gris), filas alineadas a
+  la derecha.
+- **Puntos de paginación**: al hueco del anillo, radio 3, 15 px del borde; deben
+  dejar ≥ 15 px libres bajo la última fila (en 260 px es lo que los hacía
+  pisar "Créditos").
+- **Densidad**: "Otros límites" usa bloques de 3 renglones (54 px de paso:
+  nombre + %, barra, reinicio tenue); con más de 3, "y N más".
+- **Glance** (proceso de 64 KB): 3 renglones clave/valor — Sesión, Semana y
+  Restablece; en free solo Semana + Restablece.
+- Probar siempre el **caso free** (sin ventana de 5 h): anillo en semanal, sin
+  filas de sesión/créditos y estados "Sin ventana de 5 h" / "No tienes
+  reinicios disponibles" (comentario de variante en `DemoData.mc`).
 
 ## Comandos
 

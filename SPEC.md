@@ -161,17 +161,23 @@ Garmin espera `http://localhost`; hay precedente de path propio
 
 ## Pantallas
 
-Mismas que claude-usage con este mapeo:
+Mismas que claude-usage con este mapeo (rediseño 2026-11-18, reglas en
+AGENTS.md "UI"):
 
-- **Uso**: anillo de la sesión 5 h (o de la semanal en free), hora de
-  reinicio, límite semanal compacto y fila de plan ("Plus", "Free"…).
-- **Semana**: barra de la ventana 604800 y reset.
-- **Otros límites** (antes "Superficies"): `additional_rate_limits[]`,
-  code review y otras ventanas (`"o"`): nombre + % + reset.
-- **Sesión · 5 h / Semana · 7 d**: proyecciones de ritmo (`UsageMath`, igual).
-- **Actividad**: histórico de muestras (igual).
+- **Uso**: isotipo solo aquí, grande; anillo de la sesión 5 h (o de la
+  semanal en free) con héroe en mono; etiqueta de ventana + "Restablece …";
+  filas semana → dinero → plan (el plan al final y tenue: es lo más estático).
+- **Esta semana**: héroe 71 %, "usado · todos los modelos", barra ancha,
+  reinicio y "Ritmo ideal"; el pie solo avisa si el dato tiene > 30 min.
+- **Otros límites** (antes "Superficies"): bloques de 3 renglones (nombre + %
+  + duración, barra, reinicio tenue) para `additional_rate_limits[]`, code
+  review y otras ventanas (`"o"`); más de 3 → "y N más".
+- **Sesión · 5 h / Semana · 7 d**: proyecciones de ritmo (`UsageMath`);
+  veredicto ≤ 3 líneas, sin cortar frases.
+- **Actividad**: histórico de muestras.
 - **Reinicios**: reset credits disponibles con caducidad (solo lectura).
-- **Créditos** (fila en Uso): balance y spend control si existen.
+- **Glance**: 3 renglones (Sesión, Semana, Restablece); en free, Semana +
+  Restablece. Sin isotipo (lo pinta el sistema).
 
 ## Riesgos
 
