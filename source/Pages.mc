@@ -3,8 +3,11 @@ using Toybox.Graphics;
 using Toybox.Math;
 using Toybox.Time;
 
-//! Las 7 pantallas del ciclo (la 2.ª del SPEC, "Límites semanales", se reparte
-//! en tarjetas + "Por superficie"). Todas dibujan con Skin; ninguna toca la red.
+//! Las 7 pantallas del ciclo (SPEC.md, "Pantallas"). Todas dibujan con Skin;
+//! ninguna toca la red. La instantánea usa las claves de "Instantánea":
+//!   "s" sesión 5 h · "w" semana 7 d · "o" otras ventanas · "a" límites
+//!   adicionales · "cr" code review · "g"/"gc" reinicios · "x" créditos y
+//!   spend control · "pl" plan_type · "al" allowed.
 class Pages {
     private var k as Skin;
     private const RING_START = 225;     // arco de 270 grados con el hueco abajo
@@ -73,15 +76,76 @@ class Pages {
         return k.pal.level(e["sv"] as Lang.String or Null, num(e["p"] as Lang.Numeric or Null));
     }
 
-    private function modelName(m as Lang.Dictionary) as Lang.String {
-        var n = m["n"] as Lang.String or Null;
-        return (n == null) ? "Modelo" : n;
+    //! rate_limit.allowed: false ⇒ límite alcanzado (manda sobre los %).
+    private function blocked(snap as Lang.Dictionary) as Lang.Boolean {
+        var al = snap["al"];
+        if (!(al instanceof Lang.Boolean)) {
+            return false;
+        }
+        return !(al as Lang.Boolean);
     }
 
-    private function surfaceName(n as Lang.String) as Lang.String {
-        if (n.equals("Other")) { return "Otros"; }
-        if (n.equals("Chat")) { return "Chats"; }
+    //! plan_type del cliente (codex-rs): free, plus, pro, team…
+    private function planName(p as Lang.String or Null) as Lang.String {
+        if (p == null || p.length() == 0) {
+            return "—";
+        }
+        if (p.equals("free")) { return "Free"; }
+        if (p.equals("guest")) { return "Invitado"; }
+        if (p.equals("go")) { return "Go"; }
+        if (p.equals("plus")) { return "Plus"; }
+        if (p.equals("pro")) { return "Pro"; }
+        if (p.equals("prolite")) { return "Pro Lite"; }
+        if (p.equals("promax")) { return "Pro Max"; }
+        if (p.equals("team")) { return "Team"; }
+        if (p.equals("business")) { return "Business"; }
+        return p;
+    }
+
+    //! Nombre corto para las filas de "Otros límites".
+    private function shortName(n as Lang.String) as Lang.String {
+        if (n.find("GPT-Codex-") == 0) {
+            return n.substring(10, n.length()) as Lang.String;
+        }
+        if (n.find("codex_") == 0) {
+            return n.substring(6, n.length()) as Lang.String;
+        }
         return n;
+    }
+
+    //! Título del reset credit en español (la API lo manda en inglés).
+    private function resetTitle(l as Lang.String or Null) as Lang.String {
+        if (l == null || l.length() == 0) {
+            return "Reinicio";
+        }
+        if (l.find("Full reset") != null || l.find("full reset") != null) {
+            return "Reinicio completo";
+        }
+        if (l.find("Weekly") != null) {
+            return "Reinicio semanal";
+        }
+        return l;
+    }
+
+    //! Valor de la fila de créditos.
+    private function balText(x as Lang.Dictionary) as Lang.String {
+        var unl = x["unl"];
+        if (unl instanceof Lang.Boolean && (unl as Lang.Boolean)) {
+            return "Ilimitados";
+        }
+        var bal = x["bal"];
+        var f = null as Lang.Float or Null;
+        if (bal instanceof Lang.Float) {
+            f = bal as Lang.Float;
+        } else if (bal instanceof Lang.Double) {
+            f = (bal as Lang.Double).toFloat();
+        } else if (bal instanceof Lang.Number) {
+            f = (bal as Lang.Number).toFloat();
+        }
+        if (f == null) {
+            return "Sí";
+        }
+        return (f as Lang.Float).toNumber().toString();
     }
 
     private function ringPoint(a as Lang.Number, r as Lang.Number) as Lang.Array<Lang.Number> {
@@ -104,19 +168,26 @@ class Pages {
         var sp = k.sc(50);
         Logo.draw(dc, k.cx, k.cy - k.sc(52), sp, k.pal.brand);
         k.title(dc, head, k.cy + k.sc(18));
-        k.para(dc, msg, k.fSmall, k.cy + k.sc(30), k.hSmall, 3, msgColor);
+        // 4 líneas: el aviso de login por portátil es largo
+        k.para(dc, msg, k.fSmall, k.cy + k.sc(30), k.hSmall, 4, msgColor);
     }
 
     // -------------------------------------------------------------------------
     // 1 · Principal "Uso"
     // -------------------------------------------------------------------------
 
+    //! Anillo de la sesión de 5 h; en free (sin sesión) el de la semanal.
+    //! Bajo el anillo: semana compacta, plan y créditos/spend control.
     function drawMain(dc as Graphics.Dc, snap as Lang.Dictionary, now as Lang.Number,
                       status as Lang.String or Null, warn as Lang.Boolean) as Void {
         var pal = k.pal;
         var s = dict(snap, "s");
-        var pct = (s == null) ? 0 : num(s["p"] as Lang.Numeric or Null);
-        var lv = (s == null) ? 0 : lvOf(s);
+        var w = dict(snap, "w");
+        var main = (s != null) ? s : w;
+        var pct = (main == null) ? 0 : num(main["p"] as Lang.Numeric or Null);
+        var block = blocked(snap);
+        var lv = (main == null) ? 0 : lvOf(main);
+        if (block) { lv = 2; }
         if (pct > 100) { pct = 100; }
 
         // anillo: pista + progreso, con puntas redondas
@@ -146,7 +217,7 @@ class Pages {
         Logo.draw(dc, mHeadX0 + sz / 2, hb - k.sc(8), sz, pal.brand);
         k.text(dc, mHeadX0 + sz + k.sc(6), hb, k.fTitle, "Codex", pal.text, Graphics.TEXT_JUSTIFY_LEFT);
 
-        // héroe: % de la sesión en serif grande
+        // héroe: % de la ventana principal en serif grande
         var base = k.sc(118);
         var n = pct.toString();
         var nw = dc.getTextWidthInPixels(n, k.fHero);
@@ -156,25 +227,44 @@ class Pages {
 
         // etiqueta + reinicio
         var ly = k.sc(124);
-        var label = (status != null) ? status : "Sesión actual";
-        var lc = (status != null) ? (warn ? pal.amber : pal.dim) : pal.dim;
+        var label = (s != null) ? "Sesión actual" : "Límite semanal";
+        if (block) {
+            label = "Límite alcanzado";
+        } else if (status != null) {
+            label = status;
+        }
+        var lc = block ? pal.fill(2) : ((status != null && warn) ? pal.amber : pal.dim);
         dc.setColor(lc, Graphics.COLOR_TRANSPARENT);
         dc.drawText(k.cx, ly, k.fSmall, k.fit(dc, label, k.fSmall, 2 * k.half(ly, k.hSmall)), Graphics.TEXT_JUSTIFY_CENTER);
-        if (s != null && s["r"] != null) {
-            var rs = "Se restablece " + Fmt.resetWhen(num(s["r"] as Lang.Numeric or Null), now);
+        if (main != null && main["r"] != null) {
+            var rs = "Se restablece " + Fmt.resetWhen(num(main["r"] as Lang.Numeric or Null), now);
             var ry = ly + k.hSmall;
             dc.setColor(pal.text, Graphics.COLOR_TRANSPARENT);
             dc.drawText(k.cx, ry, k.fSmall, k.fit(dc, rs, k.fSmall, 2 * k.half(ry, k.hSmall) - k.sc(8)), Graphics.TEXT_JUSTIFY_CENTER);
         }
 
-        // límites semanales compactos
+        // filas: semana (si el anillo es la sesión), plan, créditos/spend control
         var rows = [] as Lang.Array;
-        var w = dict(snap, "w");
-        if (w != null) { rows.add(["Semana", num(w["p"] as Lang.Numeric or Null), lvOf(w)]); }
-        var ms = snap["m"] as Lang.Array or Null;
-        if (ms != null && ms.size() > 0) {
-            var m0 = ms[0] as Lang.Dictionary;
-            rows.add([modelName(m0), num(m0["p"] as Lang.Numeric or Null), lvOf(m0)]);
+        if (s != null && w != null) {
+            var wp = num(w["p"] as Lang.Numeric or Null);
+            rows.add(["Semana", Fmt.pct(wp), wp, lvOf(w)]);
+        }
+        rows.add(["Plan", planName(snap["pl"] as Lang.String or Null), null, 0]);
+        var x = dict(snap, "x");
+        if (x != null) {
+            var scReached = x["sc"];
+            var hasCredits = x["on"];
+            var scPct = x["scp"] as Lang.Numeric or Null;
+            if (scReached instanceof Lang.Boolean && (scReached as Lang.Boolean)) {
+                var sp = num(scPct);
+                rows.add(["Gasto", Fmt.pct(sp), sp, pal.level(null, sp)]);
+            } else if (hasCredits instanceof Lang.Boolean && (hasCredits as Lang.Boolean)) {
+                rows.add(["Créditos", balText(x), null, 0]);
+            } else if (scPct != null) {
+                // spend control configurado (aún sin alcanzar): % del límite
+                var sp = num(scPct);
+                rows.add(["Gasto", Fmt.pct(sp), sp, pal.level(null, sp)]);
+            }
         }
         var rw = k.sc(132);
         var rx = k.cx - rw / 2;
@@ -186,109 +276,115 @@ class Pages {
             dc.setColor(pal.dim, Graphics.COLOR_TRANSPARENT);
             dc.drawText(rx, y, k.fSmall, k.fit(dc, row[0] as Lang.String, k.fSmall, rw - k.sc(40)), Graphics.TEXT_JUSTIFY_LEFT);
             dc.setColor(pal.text, Graphics.COLOR_TRANSPARENT);
-            dc.drawText(rx + rw, y, k.fSmall, Fmt.pct(row[1] as Lang.Number), Graphics.TEXT_JUSTIFY_RIGHT);
-            k.bar(dc, rx, y + k.hSmall + k.sc(1), rw, k.sc1(4), row[1] as Lang.Number, row[2] as Lang.Number);
+            dc.drawText(rx + rw, y, k.fSmall, row[1] as Lang.String, Graphics.TEXT_JUSTIFY_RIGHT);
+            if (row[2] != null) {
+                k.bar(dc, rx, y + k.hSmall + k.sc(1), rw, k.sc1(4), row[2] as Lang.Number, row[3] as Lang.Number);
+            }
         }
     }
 
     // -------------------------------------------------------------------------
-    // 2 · Límites semanales (tarjetas)
+    // 2 · Límites semanales (tarjeta)
     // -------------------------------------------------------------------------
 
     function drawWeekly(dc as Graphics.Dc, snap as Lang.Dictionary, now as Lang.Number,
                         fetched as Lang.Number or Null) as Void {
         var pal = k.pal;
         k.title(dc, "Esta semana", k.sc(50));
-        var items = [] as Lang.Array;
         var w = dict(snap, "w");
-        if (w != null) { items.add(["Todos los modelos", w]); }
-        var ms = snap["m"] as Lang.Array or Null;
-        if (ms != null) {
-            for (var i = 0; i < ms.size() && items.size() < 3; i++) {
-                var m = ms[i] as Lang.Dictionary;
-                items.add(["Solo " + modelName(m), m]);
-            }
-        }
-        var compact = items.size() >= 3;
         var cw = k.sc(196);
         var cx0 = k.cx - cw / 2;
         var pad = k.sc(10);
-        var ch = compact ? k.sc(38) : k.sc(68);
-        var gapY = k.sc(4);
+        var ch = k.sc(68);
         var y = k.sc(60);
-        // una sola fuente de etiqueta para todas las tarjetas: la grande si caben todas
-        var lfAll = k.fBody;
-        for (var i = 0; i < items.size(); i++) {
-            var itl = items[i] as Lang.Array;
-            if (compact || dc.getTextWidthInPixels(itl[0] as Lang.String, k.fBody) > cw - 2 * pad - k.sc(48)) {
-                lfAll = k.fSmall;
-            }
+        if (w == null) {
+            k.para(dc, "Sin ventana semanal", k.fSmall, y + k.sc(30), k.hSmall, 2, pal.dim);
+            return;
         }
-        for (var i = 0; i < items.size(); i++) {
-            var it = items[i] as Lang.Array;
-            var e = it[1] as Lang.Dictionary;
-            var p = num(e["p"] as Lang.Numeric or Null);
-            var lv = lvOf(e);
-            k.card(dc, cx0, y, cw, ch);
-            var iw = cw - 2 * pad;
-            var lf = lfAll;
-            var pt = Fmt.pct(p);
-            if (!compact && lf == k.fBody) { pt += " usado"; }
-            var ptw = dc.getTextWidthInPixels(pt, k.fSmall);
-            var ly = y + (compact ? k.sc(3) : k.sc(7));
-            dc.setColor(pal.text, Graphics.COLOR_TRANSPARENT);
-            dc.drawText(cx0 + pad, ly, lf, k.fit(dc, it[0] as Lang.String, lf, iw - ptw - k.sc(6)), Graphics.TEXT_JUSTIFY_LEFT);
-            dc.setColor(pal.dim, Graphics.COLOR_TRANSPARENT);
-            dc.drawText(cx0 + cw - pad, ly + (compact ? 0 : k.sc(3)), k.fSmall, pt, Graphics.TEXT_JUSTIFY_RIGHT);
-            if (compact) {
-                k.bar(dc, cx0 + pad, y + ch - k.sc(10), iw, k.sc1(5), p, lv);
-            } else {
-                k.bar(dc, cx0 + pad, y + k.sc(36), iw, k.sc1(6), p, lv);
-                if (e["r"] != null) {
-                    dc.setColor(pal.dim, Graphics.COLOR_TRANSPARENT);
-                    dc.drawText(cx0 + pad, y + k.sc(45), k.fSmall,
-                        k.fit(dc, "Restablece " + Fmt.resetWhen(num(e["r"] as Lang.Numeric or Null), now), k.fSmall, iw), Graphics.TEXT_JUSTIFY_LEFT);
-                }
-            }
-            y += ch + gapY;
-        }
-        // compacto: un solo reinicio para todas; si no, la edad del dato
-        var foot = (fetched == null) ? "" : Fmt.ago(fetched, now);
-        if (compact && w != null && w["r"] != null) {
-            foot = "Restablece " + Fmt.resetWhen(num(w["r"] as Lang.Numeric or Null), now);
-        }
+        var p = num(w["p"] as Lang.Numeric or Null);
+        var lv = lvOf(w);
+        k.card(dc, cx0, y, cw, ch);
+        var iw = cw - 2 * pad;
+        var pt = Fmt.pct(p) + " usado";
+        var ptw = dc.getTextWidthInPixels(pt, k.fSmall);
+        dc.setColor(pal.text, Graphics.COLOR_TRANSPARENT);
+        dc.drawText(cx0 + pad, y + k.sc(7), k.fBody,
+            k.fit(dc, "Todos los modelos", k.fBody, iw - ptw - k.sc(6)), Graphics.TEXT_JUSTIFY_LEFT);
         dc.setColor(pal.dim, Graphics.COLOR_TRANSPARENT);
-        var fy = y + k.sc(1);
+        dc.drawText(cx0 + cw - pad, y + k.sc(10), k.fSmall, pt, Graphics.TEXT_JUSTIFY_RIGHT);
+        k.bar(dc, cx0 + pad, y + k.sc(36), iw, k.sc1(6), p, lv);
+        if (w["r"] != null) {
+            dc.setColor(pal.dim, Graphics.COLOR_TRANSPARENT);
+            dc.drawText(cx0 + pad, y + k.sc(45), k.fSmall,
+                k.fit(dc, "Restablece " + Fmt.resetWhen(num(w["r"] as Lang.Numeric or Null), now), k.fSmall, iw),
+                Graphics.TEXT_JUSTIFY_LEFT);
+        }
+        // pie: edad del dato
+        var foot = (fetched == null) ? "" : Fmt.ago(fetched, now);
+        var fy = y + ch + k.sc(6);
+        dc.setColor(pal.dim, Graphics.COLOR_TRANSPARENT);
         dc.drawText(k.cx, fy, k.fSmall, k.fit(dc, foot, k.fSmall, 2 * k.half(fy, k.hSmall)), Graphics.TEXT_JUSTIFY_CENTER);
     }
 
     // -------------------------------------------------------------------------
-    // 3 · Por superficie
+    // 3 · Otros límites (antes "Superficies"): additional + code review + otras
     // -------------------------------------------------------------------------
 
-    function drawSurface(dc as Graphics.Dc, snap as Lang.Dictionary) as Void {
+    function drawOther(dc as Graphics.Dc, snap as Lang.Dictionary, now as Lang.Number) as Void {
         var pal = k.pal;
-        k.title(dc, "Superficies", k.sc(50));
-        var bs = snap["b"] as Lang.Array or Null;
-        if (bs == null || bs.size() == 0) {
-            k.para(dc, "Sin desglose por superficie", k.fSmall, k.cy - k.hSmall, k.hSmall, 2, pal.dim);
+        k.title(dc, "Otros límites", k.sc(50));
+        var items = [] as Lang.Array;
+        var a = snap["a"] as Lang.Array or Null;
+        if (a != null) {
+            for (var i = 0; i < a.size(); i++) {
+                items.add(a[i]);
+            }
+        }
+        var cr = dict(snap, "cr");
+        if (cr != null) {
+            items.add({ "n" => "Code review", "p" => cr["p"], "r" => cr["r"], "sec" => null });
+        }
+        var o = snap["o"] as Lang.Array or Null;
+        if (o != null) {
+            for (var i = 0; i < o.size(); i++) {
+                items.add(o[i]);
+            }
+        }
+        if (items.size() == 0) {
+            k.para(dc, "Sin otros límites", k.fBody, k.cy - k.hBody, k.hBody, 2, pal.dim);
             return;
         }
-        var rw = k.sc(172);
+        var rw = k.sc(176);
         var rx = k.cx - rw / 2;
-        var pitch = k.sc(38);
-        var n = (bs.size() > 4) ? 4 : bs.size();
-        var y = k.sc(64);
+        var pitch = k.sc(40);
+        var y = k.sc(60);
+        var n = (items.size() > 4) ? 4 : items.size();
         for (var i = 0; i < n; i++) {
-            var b = bs[i] as Lang.Dictionary;
-            var p = num(b["p"] as Lang.Numeric or Null);
+            var it = items[i] as Lang.Dictionary;
+            var p = num(it["p"] as Lang.Numeric or Null);
             var pt = Fmt.pct(p);
             var ptw = dc.getTextWidthInPixels(pt, k.fBody);
+            var name = (it["n"] as Lang.String or Null);
             dc.setColor(pal.text, Graphics.COLOR_TRANSPARENT);
-            dc.drawText(rx, y, k.fBody, k.fit(dc, surfaceName((b["n"] as Lang.String or Null) == null ? "?" : b["n"] as Lang.String), k.fBody, rw - ptw - k.sc(6)), Graphics.TEXT_JUSTIFY_LEFT);
+            dc.drawText(rx, y, k.fBody,
+                k.fit(dc, shortName((name == null) ? "?" : name), k.fBody, rw - ptw - k.sc(6)),
+                Graphics.TEXT_JUSTIFY_LEFT);
             dc.setColor(pal.dim, Graphics.COLOR_TRANSPARENT);
             dc.drawText(rx + rw, y, k.fBody, pt, Graphics.TEXT_JUSTIFY_RIGHT);
-            k.bar(dc, rx, y + k.hBody + k.sc(1), rw, k.sc1(5), p, -1);
+            k.bar(dc, rx, y + k.hBody + k.sc(1), rw, k.sc1(4), p, -1);
+            var sub = "";
+            var r = it["r"] as Lang.Numeric or Null;
+            if (r != null) {
+                sub = "Restablece " + Fmt.resetWhen(r.toNumber(), now);
+            } else {
+                var sec = it["sec"] as Lang.Numeric or Null;
+                sub = (sec == null) ? "" : UsageStore.durationName(sec.toNumber());
+            }
+            if (sub.length() > 0) {
+                dc.setColor(pal.dim, Graphics.COLOR_TRANSPARENT);
+                dc.drawText(rx, y + k.hBody + k.sc(6), k.fSmall,
+                    k.fit(dc, sub, k.fSmall, rw), Graphics.TEXT_JUSTIFY_LEFT);
+            }
             y += pitch;
         }
     }
@@ -304,7 +400,8 @@ class Pages {
         k.text(dc, k.cx, k.sc(33), k.fSmall, week ? "Semana · 7 d" : "Sesión · 5 h", pal.dim, Graphics.TEXT_JUSTIFY_CENTER);
         var e = dict(snap, week ? "w" : "s");
         if (e == null) {
-            k.para(dc, "Sin datos", k.fSmall, k.cy - k.hSmall, k.hSmall, 2, pal.dim);
+            k.para(dc, week ? "Sin ventana semanal" : "Sin ventana de 5 h", k.fSmall,
+                k.cy - k.hSmall, k.hSmall, 2, pal.dim);
             return;
         }
         var p = num(e["p"] as Lang.Numeric or Null);
@@ -476,15 +573,18 @@ class Pages {
     }
 
     // -------------------------------------------------------------------------
-    // 7 · Restablecimientos de límites
+    // 7 · Reinicios (reset credits disponibles, solo lectura)
     // -------------------------------------------------------------------------
 
     function drawResets(dc as Graphics.Dc, snap as Lang.Dictionary, now as Lang.Number) as Void {
         var pal = k.pal;
-        k.title(dc, "Reinicios", k.sc(50));
         var gs = snap["g"] as Lang.Array or Null;
+        var gc = snap["gc"] as Lang.Numeric or Null;
+        var count = (gc == null) ? ((gs == null) ? 0 : gs.size()) : gc.toNumber();
+        k.title(dc, (count > 0) ? "Reinicios · " + count : "Reinicios", k.sc(50));
         if (gs == null || gs.size() == 0) {
-            k.para(dc, "No tienes restablecimientos disponibles", k.fBody, k.cy - k.hBody, k.hBody, 3, pal.dim);
+            k.para(dc, (count > 0) ? "Tienes " + count + " reinicio(s) disponible(s)" : "No tienes reinicios disponibles",
+                k.fBody, k.cy - k.hBody, k.hBody, 3, pal.dim);
             return;
         }
         var n = (gs.size() > 3) ? 3 : gs.size();
@@ -497,26 +597,18 @@ class Pages {
         for (var i = 0; i < n; i++) {
             var g = gs[i] as Lang.Dictionary;
             k.card(dc, cx0, y, cw, ch);
-            var name = (g["l"] as Lang.String or Null);
-            if (name == null) { name = "Reinicio"; }
-            if (name.find("Restablecimiento") == 0) {
-                name = "Reinicio" + name.substring(16, name.length());
-            }
-            if (num(g["left"] as Lang.Numeric or Null) > 1) { name = name + " ×" + num(g["left"] as Lang.Numeric or Null); }
+            var name = resetTitle(g["l"] as Lang.String or Null);
             var lf = compact ? k.fSmall : k.pick(dc, name, cw - 2 * pad);
             var lh = (lf == k.fBody) ? k.hBody : k.hSmall;
             dc.setColor(pal.text, Graphics.COLOR_TRANSPARENT);
             dc.drawText(cx0 + pad, y + k.sc(compact ? 3 : 5), lf, k.fit(dc, name, lf, cw - 2 * pad), Graphics.TEXT_JUSTIFY_LEFT);
             var cap;
-            var cc = pal.dim;
-            if (g["pz"] == true) {
-                cap = "En pausa";
-            } else if (g["e"] != null) {
+            if (g["e"] != null) {
                 cap = "Caduca " + Fmt.expiry(num(g["e"] as Lang.Numeric or Null), now);
             } else {
                 cap = "Disponible";
             }
-            dc.setColor(cc, Graphics.COLOR_TRANSPARENT);
+            dc.setColor(pal.dim, Graphics.COLOR_TRANSPARENT);
             dc.drawText(cx0 + pad, y + k.sc(compact ? 3 : 5) + lh, k.fSmall, k.fit(dc, cap, k.fSmall, cw - 2 * pad), Graphics.TEXT_JUSTIFY_LEFT);
             y += ch + k.sc(4);
         }

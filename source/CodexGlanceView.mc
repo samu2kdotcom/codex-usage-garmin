@@ -31,9 +31,9 @@ class CodexGlanceView extends WatchUi.GlanceView {
             mFetched = Time.now().value() - 180;
             return;
         }
-        var v = Storage.getValue("cu_snap");
+        var v = Storage.getValue("cx_snap");
         mSnap = (v instanceof Lang.Dictionary) ? (v as Lang.Dictionary) : null;
-        v = Storage.getValue("cu_fetch");
+        v = Storage.getValue("cx_fetch");
         mFetched = (v instanceof Lang.Number) ? (v as Lang.Number) : null;
     }
 
@@ -65,7 +65,7 @@ class CodexGlanceView extends WatchUi.GlanceView {
         var top = (h - (hHead + 2 + 2 * rowH)) / 2;
         if (top < 0) { top = 0; }
 
-        // cabecera: spark + Claude + edad
+        // cabecera: spark + Codex + edad
         var sz = hHead * 3 / 4;
         Logo.draw(dc, pad + sz / 2, top + hHead / 2, sz, pal.brand);
         dc.setColor(pal.text, Graphics.COLOR_TRANSPARENT);
@@ -85,11 +85,23 @@ class CodexGlanceView extends WatchUi.GlanceView {
             dc.drawText(w - pad, top + (hHead - hRow) / 2 + 1, fRow, age, Graphics.TEXT_JUSTIFY_RIGHT);
         }
 
-        var labels = ["Sesión", "Semana"];
-        var keys = ["s", "w"];
+        // Sesión 5 h y semana; en free solo hay semanal (un solo renglón).
+        var s0 = sn["s"] as Lang.Dictionary or Null;
+        var w0 = sn["w"] as Lang.Dictionary or Null;
         var lw = dc.getTextWidthInPixels("Semana", fRow);
         for (var i = 0; i < 2; i++) {
-            var e = sn[keys[i]] as Lang.Dictionary or Null;
+            var e = null as Lang.Dictionary or Null;
+            var lab = "Semana";
+            if (i == 0) {
+                if (s0 != null) {
+                    e = s0;
+                    lab = "Sesión";
+                } else {
+                    e = w0;
+                }
+            } else if (s0 != null) {
+                e = w0;
+            }
             if (e == null) { continue; }
             var p = (e["p"] as Lang.Numeric).toNumber();
             var lv = pal.level(e["sv"] as Lang.String or Null, p);
@@ -97,7 +109,7 @@ class CodexGlanceView extends WatchUi.GlanceView {
             var pt = p + "%";
             var ptw = dc.getTextWidthInPixels("100%", fRow);
             dc.setColor(pal.dim, Graphics.COLOR_TRANSPARENT);
-            dc.drawText(pad, y, fRow, labels[i], Graphics.TEXT_JUSTIFY_LEFT);
+            dc.drawText(pad, y, fRow, lab, Graphics.TEXT_JUSTIFY_LEFT);
             dc.setColor(pal.text, Graphics.COLOR_TRANSPARENT);
             dc.drawText(w - pad, y, fRow, pt, Graphics.TEXT_JUSTIFY_RIGHT);
             var bx = pad + lw + pad;

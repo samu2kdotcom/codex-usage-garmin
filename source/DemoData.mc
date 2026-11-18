@@ -3,32 +3,37 @@ using Toybox.Time;
 
 //! Datos de ejemplo (solo en builds DEMO=1: monkey.jungle excluye (:demo)).
 //! Mismo formato que la instantánea que UsageStore guarda en Storage
-//! (ver SPEC.md, "Instantánea"). Calcados de una respuesta real de
-//! /api/oauth/usage (sesión 6 %, semana 92 % crítica, Fable 7 %).
+//! (ver SPEC.md, "Instantánea"): cuenta Plus con ventanas de 5 h y semanal,
+//! límite adicional de Spark, code review, reinicios y spend control.
+//! Para ver el caso free basta con quitar "s", "a", "cr", "o", "g"/"gc" y
+//! dejar solo "w" (una sola ventana; el anillo de Uso pasa a la semanal).
 (:glance, :demo)
 module DemoData {
 
     function snapshot() as Lang.Dictionary {
         var now = Time.now().value();
         return {
-            "s" => { "p" => 64, "r" => now + 2 * 3600 + 18 * 60, "sv" => "normal" },
-            "w" => { "p" => 92, "r" => now + 2 * 86400 + 22 * 3600, "sv" => "critical" },
-            "m" => [
-                { "n" => "Fable", "p" => 7, "r" => now + 2 * 86400 + 22 * 3600, "sv" => "normal" }
+            "s" => { "p" => 34, "r" => now + 2 * 3600 + 18 * 60, "sv" => null, "sec" => 18000 },
+            "w" => { "p" => 71, "r" => now + 3 * 86400 + 4 * 3600, "sv" => null, "sec" => 604800 },
+            "o" => [
+                { "n" => "Ventana 2 h", "p" => 12, "r" => now + 40 * 60, "sec" => 7200 }
             ],
-            "b" => [
-                { "n" => "Codex", "p" => 96 },
-                { "n" => "Cowork", "p" => 4 },
-                { "n" => "Chats", "p" => 0 },
-                { "n" => "Other", "p" => 0 }
+            "a" => [
+                { "n" => "GPT-Codex-Spark", "p" => 18, "r" => now + 3 * 86400 + 4 * 3600, "sec" => 604800 }
             ],
+            "cr" => { "p" => 4, "r" => now + 3 * 86400 + 4 * 3600 },
             "g" => [
-                { "l" => "Restablecimiento completo", "t" => "full", "left" => 1, "tot" => 1,
-                  "e" => now + 25 * 86400, "u" => true, "pz" => false },
-                { "l" => "Reinicio de Fable", "t" => "weekly", "left" => 1, "tot" => 1,
-                  "e" => now + 36 * 3600, "u" => true, "pz" => false }
+                { "id" => "RateLimitResetCredit_demo1", "l" => "Full reset (Weekly + 5 hr)",
+                  "t" => "codex_rate_limits", "e" => now + 25 * 86400, "st" => "available" },
+                { "id" => "RateLimitResetCredit_demo2", "l" => "Full reset (Weekly + 5 hr)",
+                  "t" => "codex_rate_limits", "e" => now + 11 * 86400, "st" => "available" }
             ],
-            "x" => { "on" => false, "p" => null }
+            "gc" => 2,
+            "x" => { "on" => true, "bal" => 12.0, "unl" => false, "rc" => false,
+                     "sc" => false, "scp" => 60, "scr" => now + 4 * 86400 },
+            "pl" => "plus",
+            "al" => true,
+            "aid" => "acct_demo"
         };
     }
 
@@ -37,9 +42,9 @@ module DemoData {
         var now = Time.now().value();
         var start = now - 4 * 86400 - 2 * 3600;
         var out = [];
-        var w = [3, 9, 18, 26, 31, 44, 52, 58, 63, 71, 77, 84, 88, 92];
+        var w = [3, 9, 18, 26, 31, 44, 52, 58, 63, 71, 76, 80, 84, 88];
         for (var i = 0; i < w.size(); i++) {
-            out.add([start + i * (now - start) / (w.size() - 1), (i * 37) % 100, w[i]]);
+            out.add([start + i * (now - start) / (w.size() - 1), (i * 23) % 60, w[i]]);
         }
         return out;
     }

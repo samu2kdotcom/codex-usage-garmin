@@ -4,12 +4,13 @@ using Toybox.Graphics;
 using Toybox.Time;
 
 //! Vista principal del widget: un solo View con un ciclo de pantallas.
-//!   0 Uso (anillo de la sesión)   1 Límites semanales   2 Por superficie
+//!   0 Uso (anillo de la sesión 5 h o de la semana en free)
+//!   1 Límites semanales   2 Otros límites
 //!   3 Proyección · Sesión (5 h)   4 Proyección · Semana (7 d)
-//!   5 Actividad                   6 Restablecimientos de límites
-//! DOWN/UP recorren el ciclo (con vuelta), START refresca o inicia sesión,
-//! MENU (fr955: mantener UP) abre el menú, BACK sale. Sin sesión o sin datos
-//! solo hay una pantalla (aviso).
+//!   5 Actividad                   6 Reinicios
+//! DOWN/UP recorren el ciclo (con vuelta), START refresca (o muestra cómo
+//! iniciar sesión), MENU (fr955: mantener UP) abre el menú, BACK sale. Sin
+//! sesión o sin datos solo hay una pantalla (aviso).
 class CodexUsageView extends WatchUi.View {
 
     private const PAGES = 7;
@@ -90,7 +91,7 @@ class CodexUsageView extends WatchUi.View {
         if (CodexAuth.hasCredentials()) {
             m.addItem(new WatchUi.MenuItem("Cerrar sesión", null, :logout, {}));
         } else if (UsageStore.needsLogin()) {
-            m.addItem(new WatchUi.MenuItem("Iniciar sesión", null, :login, {}));
+            m.addItem(new WatchUi.MenuItem("Cómo iniciar sesión", null, :login, {}));
         }
         WatchUi.pushView(m, new CodexMenuDelegate(self), WatchUi.SLIDE_UP);
     }
@@ -109,18 +110,15 @@ class CodexUsageView extends WatchUi.View {
 
         var now = Time.now().value();
         if (UsageStore.needsLogin()) {
-            // Google bloquea su login dentro del navegador de Garmin Connect
-            // (se queda en blanco en accounts.google.com/gsi/transform): hay
-            // que entrar con el correo (código por email), misma cuenta.
-            var msg = "Pulsa START. En el móvil entra con tu correo, no con Google";
+            // v1: la sesión se crea en el portátil (device code) y se hornea en
+            // un build personal (SPEC.md, "Autenticación · Vía 1").
+            var msg = "Sesión: ejecuta scripts/codex-login.py en el portátil y scripts/bake-personal.sh";
             var col = pal.dim;
             if (mLoginMsg != null) {
                 msg = mLoginMsg;
                 col = pal.amber;
-            } else if (CodexAuth.loginPending()) {
-                msg = "En Garmin Connect: Continuar con correo (Google no va)";
             }
-            pg.drawNotice(dc, "Inicia sesión", msg, col);
+            pg.drawNotice(dc, "Sin sesión", msg, col);
             return;
         }
 
@@ -158,7 +156,7 @@ class CodexUsageView extends WatchUi.View {
                 pg.drawWeekly(dc, snap, now, fetched);
                 break;
             case 2:
-                pg.drawSurface(dc, snap);
+                pg.drawOther(dc, snap, now);
                 break;
             case 3:
                 pg.drawProj(dc, snap, now, false);
@@ -218,7 +216,7 @@ class CodexUsageDelegate extends WatchUi.BehaviorDelegate {
     }
 }
 
-//! Menú: Actualizar / Cerrar sesión / Iniciar sesión.
+//! Menú: Actualizar / Cerrar sesión / Cómo iniciar sesión.
 class CodexMenuDelegate extends WatchUi.Menu2InputDelegate {
 
     private var mView as CodexUsageView;
